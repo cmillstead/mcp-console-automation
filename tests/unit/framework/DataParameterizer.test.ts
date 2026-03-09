@@ -2,8 +2,8 @@
  * DataParameterizer Tests
  */
 
-import { DataParameterizer } from '../testing/DataParameterizer.js';
-import { TestDefinition } from '../types/test-framework.js';
+import { DataParameterizer } from '../../../src/testing/DataParameterizer.js';
+import { TestDefinition } from '../../../src/types/test-framework.js';
 
 describe('DataParameterizer', () => {
   let parameterizer: DataParameterizer;

@@ -2,12 +2,12 @@
  * Tests for RetryManager
  */
 
-import { RetryManager, CircuitBreaker } from '../testing/RetryManager.js';
+import { RetryManager, CircuitBreaker } from '../../../src/testing/RetryManager.js';
 import {
   TestDefinition,
   TestResult,
   RetryConfig,
-} from '../types/test-framework.js';
+} from '../../../src/types/test-framework.js';
 
 describe('RetryManager', () => {
   let retryManager: RetryManager;

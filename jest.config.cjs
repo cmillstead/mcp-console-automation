@@ -1,11 +1,9 @@
 module.exports = {
   preset: 'ts-jest',
   testEnvironment: 'node',
-  roots: ['<rootDir>/tests', '<rootDir>/test', '<rootDir>/src/tests'],
+  roots: ['<rootDir>/tests'],
   testMatch: [
-    '<rootDir>/tests/**/*.test.ts',
-    '<rootDir>/test/**/*.test.ts',
-    '<rootDir>/src/tests/**/*.test.ts'
+    '<rootDir>/tests/**/*.test.ts'
   ],
   testPathIgnorePatterns: [
     '/node_modules/',
@@ -45,10 +43,10 @@ module.exports = {
     '^(\.{1,2}/.+)\.js$': '$1',
     '^@/(.*)$': '<rootDir>/src/$1',
     '^@tests/(.*)$': '<rootDir>/tests/$1',
-    '^strip-ansi$': '<rootDir>/src/tests/__mocks__/strip-ansi.cjs',
-    '^ansi-regex$': '<rootDir>/src/tests/__mocks__/ansi-regex.cjs',
-    '^p-queue$': '<rootDir>/src/tests/__mocks__/p-queue.cjs',
-    '^@kubernetes/client-node$': '<rootDir>/src/tests/__mocks__/@kubernetes/client-node.cjs'
+    '^strip-ansi$': '<rootDir>/tests/__mocks__/strip-ansi.cjs',
+    '^ansi-regex$': '<rootDir>/tests/__mocks__/ansi-regex.cjs',
+    '^p-queue$': '<rootDir>/tests/__mocks__/p-queue.cjs',
+    '^@kubernetes/client-node$': '<rootDir>/tests/__mocks__/@kubernetes/client-node.cjs'
   },
   moduleFileExtensions: ['ts', 'tsx', 'js', 'jsx', 'json', 'node', 'mjs'],
   globals: {

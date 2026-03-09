@@ -3,12 +3,12 @@
  * Demonstrates 3-5x speedup with parallel execution
  */
 
-import { ParallelExecutor } from '../testing/ParallelExecutor.js';
+import { ParallelExecutor } from '../../../src/testing/ParallelExecutor.js';
 import {
   Assertion,
   TestDefinition,
   ParallelExecutionConfig,
-} from '../types/test-framework.js';
+} from '../../../src/types/test-framework.js';
 import fs from 'fs';
 import path from 'path';
 

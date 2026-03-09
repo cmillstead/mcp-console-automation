@@ -2,12 +2,12 @@
  * Tests for ParallelExecutor
  */
 
-import { ParallelExecutor } from '../testing/ParallelExecutor.js';
+import { ParallelExecutor } from '../../../src/testing/ParallelExecutor.js';
 import {
   Assertion,
   TestDefinition,
   ParallelExecutionConfig,
-} from '../types/test-framework.js';
+} from '../../../src/types/test-framework.js';
 
 describe('ParallelExecutor', () => {
   let executor: ParallelExecutor;

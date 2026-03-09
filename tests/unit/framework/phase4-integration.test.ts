@@ -3,17 +3,17 @@
  * Tests integration between ParallelExecutor, RetryManager, FlakeDetector, and ExecutionMetrics
  */
 
-import { ParallelExecutor } from '../testing/ParallelExecutor.js';
-import { RetryManager } from '../testing/RetryManager.js';
-import { FlakeDetector } from '../testing/FlakeDetector.js';
-import { ExecutionMetricsCollector } from '../testing/ExecutionMetrics.js';
+import { ParallelExecutor } from '../../../src/testing/ParallelExecutor.js';
+import { RetryManager } from '../../../src/testing/RetryManager.js';
+import { FlakeDetector } from '../../../src/testing/FlakeDetector.js';
+import { ExecutionMetricsCollector } from '../../../src/testing/ExecutionMetrics.js';
 import {
   Assertion,
   AssertionResult,
   TestDefinition,
   TestResult,
   ParallelExecutionConfig,
-} from '../types/test-framework.js';
+} from '../../../src/types/test-framework.js';
 
 describe('Phase 4 Integration', () => {
   describe('Parallel Execution + Retry Integration', () => {

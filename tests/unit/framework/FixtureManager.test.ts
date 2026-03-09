@@ -2,7 +2,7 @@
  * FixtureManager Tests
  */
 
-import { FixtureManager } from '../testing/FixtureManager.js';
+import { FixtureManager } from '../../../src/testing/FixtureManager.js';
 import * as path from 'path';
 
 describe('FixtureManager', () => {

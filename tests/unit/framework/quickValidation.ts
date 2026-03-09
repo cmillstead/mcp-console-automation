@@ -1,5 +1,5 @@
-import { OutputFilterEngine } from '../core/OutputFilterEngine.js';
-import { ConsoleOutput } from '../types/index.js';
+import { OutputFilterEngine } from '../../../src/core/OutputFilterEngine.js';
+import { ConsoleOutput } from '../../../src/types/index.js';
 
 /**
  * Quick validation test for the OutputFilterEngine

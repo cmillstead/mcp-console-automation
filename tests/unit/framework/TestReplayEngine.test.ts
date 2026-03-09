@@ -2,10 +2,10 @@
  * Unit tests for TestReplayEngine
  */
 
-import { TestReplayEngine } from '../testing/TestReplayEngine.js';
-import { TestRecorder } from '../testing/TestRecorder.js';
-import { StepResult, TestRecording } from '../types/test-framework.js';
-import { ConsoleManager } from '../core/ConsoleManager.js';
+import { TestReplayEngine } from '../../../src/testing/TestReplayEngine.js';
+import { TestRecorder } from '../../../src/testing/TestRecorder.js';
+import { StepResult, TestRecording } from '../../../src/types/test-framework.js';
+import { ConsoleManager } from '../../../src/core/ConsoleManager.js';
 
 // Mock ConsoleManager
 jest.mock('../core/ConsoleManager');

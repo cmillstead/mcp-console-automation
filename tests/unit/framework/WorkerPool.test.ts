@@ -2,8 +2,8 @@
  * Tests for WorkerPool
  */
 
-import { WorkerPool, WorkerTask } from '../testing/WorkerPool.js';
-import { Assertion } from '../types/test-framework.js';
+import { WorkerPool, WorkerTask } from '../../../src/testing/WorkerPool.js';
+import { Assertion } from '../../../src/types/test-framework.js';
 
 describe('WorkerPool', () => {
   let pool: WorkerPool;

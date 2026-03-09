@@ -3,8 +3,8 @@
  * Tests snapshot capture, storage, and management
  */
 
-import { SnapshotManager } from '../testing/SnapshotManager.js';
-import { SessionSnapshot } from '../types/test-framework.js';
+import { SnapshotManager } from '../../../src/testing/SnapshotManager.js';
+import { SessionSnapshot } from '../../../src/types/test-framework.js';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';

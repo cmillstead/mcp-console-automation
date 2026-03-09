@@ -2,9 +2,9 @@
  * Unit tests for CodeGenerator
  */
 
-import { CodeGenerator } from '../testing/CodeGenerator.js';
-import { TestRecorder } from '../testing/TestRecorder.js';
-import { TestRecording } from '../types/test-framework.js';
+import { CodeGenerator } from '../../../src/testing/CodeGenerator.js';
+import { TestRecorder } from '../../../src/testing/TestRecorder.js';
+import { TestRecording } from '../../../src/types/test-framework.js';
 import * as fs from 'fs';
 import * as path from 'path';
 
