@@ -1572,7 +1572,7 @@ export class ConsoleManager extends EventEmitter implements CommandQueueHost {
     this.logger.info('Self-healing integration setup completed');
   }
 
-  private async handleCriticalSystemIssue(issue: any): Promise<void> {
+  private async handleCriticalSystemIssue(issue: { type: string }): Promise<void> {
     this.logger.info(
       `Attempting to handle critical system issue: ${issue.type}`
     );
@@ -1609,7 +1609,7 @@ export class ConsoleManager extends EventEmitter implements CommandQueueHost {
     }
   }
 
-  private triggerPredictiveHealing(trigger: string, data: any): void {
+  private triggerPredictiveHealing(trigger: string, data: unknown): void {
     this.logger.info(`Predictive healing triggered: ${trigger}`, data);
     this.emit('predictive-healing-triggered', {
       trigger,
@@ -3112,17 +3112,17 @@ export class ConsoleManager extends EventEmitter implements CommandQueueHost {
    * Get comprehensive system and session health status
    */
   public async getHealthStatus(): Promise<{
-    systemHealth: any;
+    systemHealth: unknown;
     sessionHealth: Map<string, any>;
     connectionHealth: Map<string, any>;
-    metrics: any;
+    metrics: unknown;
     healingStats: typeof this.healingStats;
   }> {
     const result = {
-      systemHealth: null as any,
+      systemHealth: null as unknown,
       sessionHealth: new Map<string, any>(),
       connectionHealth: new Map<string, any>(),
-      metrics: null as any,
+      metrics: null as unknown,
       healingStats: { ...this.healingStats },
     };
 
@@ -3154,7 +3154,7 @@ export class ConsoleManager extends EventEmitter implements CommandQueueHost {
       const connectionHealthMap = this.sshKeepAlive.getConnectionHealth();
       if (connectionHealthMap && typeof connectionHealthMap === 'object') {
         for (const [connId, health] of Object.entries(
-          connectionHealthMap as Record<string, any>
+          connectionHealthMap as Record<string, unknown>
         )) {
           result.connectionHealth.set(connId, health);
         }
@@ -3257,7 +3257,7 @@ export class ConsoleManager extends EventEmitter implements CommandQueueHost {
 
     const results = {
       system: await this.healthMonitor.getHealthStatistics(),
-      sessions: new Map<string, any>(),
+      sessions: new Map<string, unknown>(),
       connections: this.sshKeepAlive.getConnectionHealth(),
       timestamp: new Date(),
     };
@@ -3288,7 +3288,7 @@ export class ConsoleManager extends EventEmitter implements CommandQueueHost {
     timeRange?: { start: number; end: number };
     aggregationWindow?: string;
     includeRaw?: boolean;
-  }): any {
+  }): unknown {
     if (!this.selfHealingEnabled) {
       throw new Error('Self-healing is not enabled');
     }
@@ -3337,7 +3337,7 @@ export class ConsoleManager extends EventEmitter implements CommandQueueHost {
   /**
    * Get session recovery history and statistics
    */
-  public getRecoveryHistory(): any {
+  public getRecoveryHistory(): unknown {
     if (!this.selfHealingEnabled) {
       throw new Error('Self-healing is not enabled');
     }
@@ -4695,27 +4695,27 @@ export class ConsoleManager extends EventEmitter implements CommandQueueHost {
       this.handleSerialBinaryData(output);
     });
 
-    this.serialProtocol.on('connection', (event: any) => {
+    this.serialProtocol.on('connection', (event: unknown) => {
       this.logger.info(`Serial connection event:`, event);
       this.emit('serial:connection', event);
     });
 
-    this.serialProtocol.on('disconnection', (event: any) => {
+    this.serialProtocol.on('disconnection', (event: unknown) => {
       this.logger.warn(`Serial disconnection event:`, event);
       this.emit('serial:disconnection', event);
     });
 
-    this.serialProtocol.on('error', (event: any) => {
+    this.serialProtocol.on('error', (event: unknown) => {
       this.logger.error(`Serial error event:`, event);
       this.emit('serial:error', event);
     });
 
-    this.serialProtocol.on('bootloader_detected', (event: any) => {
+    this.serialProtocol.on('bootloader_detected', (event: unknown) => {
       this.logger.info(`Bootloader detected:`, event);
       this.emit('serial:bootloader_detected', event);
     });
 
-    this.serialProtocol.on('device_list_updated', (devices: any) => {
+    this.serialProtocol.on('device_list_updated', (devices: unknown) => {
       this.emit('serial:device_list_updated', devices);
     });
   }
@@ -5090,7 +5090,7 @@ export class ConsoleManager extends EventEmitter implements CommandQueueHost {
 
     this.awsSSMProtocol.on(
       'health-check',
-      (data: { status: string; timestamp: Date; error?: any }) => {
+      (data: { status: string; timestamp: Date; error?: unknown }) => {
         if (data.status === 'unhealthy') {
           this.logger.warn(`AWS SSM protocol health check failed:`, data.error);
         }
@@ -7234,7 +7234,7 @@ export class ConsoleManager extends EventEmitter implements CommandQueueHost {
     timeoutMs: number = 1000
   ): Promise<{
     output: string;
-    stats: any;
+    stats: unknown;
     captureTime: number;
   }> {
     const startTime = Date.now();
@@ -7648,7 +7648,7 @@ export class ConsoleManager extends EventEmitter implements CommandQueueHost {
     return this.outputBuffers.get(sessionId)?.length || 0;
   }
 
-  getSSHChannel(sessionId: string): any {
+  getSSHChannel(sessionId: string): ClientChannel | undefined {
     return this.sshChannels.get(sessionId);
   }
 
@@ -7657,7 +7657,7 @@ export class ConsoleManager extends EventEmitter implements CommandQueueHost {
     return session?.sshOptions?.host;
   }
 
-  addToOutputBuffer(sessionId: string, output: any): void {
+  addToOutputBuffer(sessionId: string, output: ConsoleOutput): void {
     this.addToBuffer(sessionId, output);
   }
 
@@ -7665,7 +7665,7 @@ export class ConsoleManager extends EventEmitter implements CommandQueueHost {
     return this.monitoringSystem.isSessionBeingMonitored(sessionId);
   }
 
-  recordMonitoringEvent(sessionId: string, type: string, data: any): void {
+  recordMonitoringEvent(sessionId: string, type: string, data: unknown): void {
     this.monitoringSystem.recordEvent(sessionId, type, data);
   }
 
@@ -7774,14 +7774,14 @@ export class ConsoleManager extends EventEmitter implements CommandQueueHost {
           sessionId,
           message: 'Stream manager destroyed successfully',
         });
-      } catch (error: any) {
+      } catch (error: unknown) {
         this.diagnosticsManager.recordEvent({
           level: 'warn',
           category: 'session',
           operation: 'stream_destroy_error',
           sessionId,
           message: 'Error destroying stream manager',
-          data: { error: error.message },
+          data: { error: error instanceof Error ? error.message : String(error) },
         });
       }
     }
@@ -8320,7 +8320,7 @@ export class ConsoleManager extends EventEmitter implements CommandQueueHost {
   /**
    * Get circuit breaker states
    */
-  getCircuitBreakerStates(): any {
+  getCircuitBreakerStates(): unknown {
     return this.retryManager.getCircuitBreakerStates();
   }
 
@@ -8728,7 +8728,7 @@ export class ConsoleManager extends EventEmitter implements CommandQueueHost {
   /**
    * Discover available serial devices
    */
-  async discoverSerialDevices(): Promise<any[]> {
+  async discoverSerialDevices(): Promise<unknown[]> {
     try {
       // Initialize serial protocol if not already done
       if (!this.serialProtocol) {
@@ -8747,7 +8747,7 @@ export class ConsoleManager extends EventEmitter implements CommandQueueHost {
   /**
    * Get serial connection status for a session
    */
-  getSerialConnectionStatus(sessionId: string): any {
+  getSerialConnectionStatus(sessionId: string): unknown {
     if (!this.serialProtocol) {
       return null;
     }
@@ -8780,7 +8780,7 @@ export class ConsoleManager extends EventEmitter implements CommandQueueHost {
   /**
    * Get output buffer for serial session
    */
-  getSerialOutputBuffer(sessionId: string, limit?: number): any[] {
+  getSerialOutputBuffer(sessionId: string, limit?: number): unknown[] {
     if (!this.serialProtocol) {
       return [];
     }
@@ -8883,7 +8883,7 @@ export class ConsoleManager extends EventEmitter implements CommandQueueHost {
     sessionId: string;
     interruptType: string;
     signals: string[];
-    interactiveState?: any;
+    interactiveState?: unknown;
   }): Promise<void> {
     try {
       this.logger.info(
@@ -8943,7 +8943,7 @@ export class ConsoleManager extends EventEmitter implements CommandQueueHost {
   private async handlePromptResetRequest(data: {
     sessionId: string;
     actions: string[];
-    preserveState: any;
+    preserveState: unknown;
   }): Promise<void> {
     try {
       this.logger.info(`Handling prompt reset request for ${data.sessionId}`);
@@ -9011,7 +9011,7 @@ export class ConsoleManager extends EventEmitter implements CommandQueueHost {
     refreshActions: string[];
     timeout: number;
     fallbackToRestart: boolean;
-    preserveState: any;
+    preserveState: { workingDirectory?: string };
   }): Promise<void> {
     try {
       this.logger.info(
@@ -9214,7 +9214,7 @@ export class ConsoleManager extends EventEmitter implements CommandQueueHost {
    */
   private async handleInteractiveStateUpdate(data: {
     sessionId: string;
-    interactiveState: any;
+    interactiveState: unknown;
   }): Promise<void> {
     try {
       // Emit event for external monitoring
@@ -9525,7 +9525,7 @@ export class ConsoleManager extends EventEmitter implements CommandQueueHost {
   /**
    * Estimate the resource cost of recovery (0-1 scale)
    */
-  private estimateRecoveryCost(sessionId: string, failureContext: any): number {
+  private estimateRecoveryCost(sessionId: string, failureContext: { attempts: number; duration: number }): number {
     let cost = 0;
 
     const session = this.sessions.get(sessionId);
@@ -9834,7 +9834,7 @@ export class ConsoleManager extends EventEmitter implements CommandQueueHost {
   /**
    * Get Azure session metrics and health
    */
-  getAzureSessionMetrics(sessionId: string): Record<string, any> {
+  getAzureSessionMetrics(sessionId: string): Record<string, unknown> {
     return this.azureProtocol.getSessionMetrics(sessionId);
   }
 
@@ -9978,14 +9978,14 @@ export class ConsoleManager extends EventEmitter implements CommandQueueHost {
 
     this.rdpProtocol.on(
       'file-transfer-progress',
-      (sessionId: string, progress: any) => {
+      (sessionId: string, progress: unknown) => {
         this.emit('rdp-file-transfer-progress', { sessionId, progress });
       }
     );
 
     this.rdpProtocol.on(
       'performance-metrics',
-      (sessionId: string, metrics: any) => {
+      (sessionId: string, metrics: unknown) => {
         this.emit('rdp-performance-metrics', { sessionId, metrics });
       }
     );
@@ -10051,14 +10051,14 @@ export class ConsoleManager extends EventEmitter implements CommandQueueHost {
 
     this.webSocketTerminalProtocol.on(
       'file_transfer_progress',
-      (data: { sessionId: string; transfer: any }) => {
+      (data: { sessionId: string; transfer: unknown }) => {
         this.emit('websocket-terminal-file-transfer-progress', data);
       }
     );
 
     this.webSocketTerminalProtocol.on(
       'multiplex_session_created',
-      (data: { sessionId: string; multiplexSession: any }) => {
+      (data: { sessionId: string; multiplexSession: unknown }) => {
         this.emit('websocket-terminal-multiplex-session-created', data);
       }
     );
@@ -10575,8 +10575,7 @@ export class ConsoleManager extends EventEmitter implements CommandQueueHost {
    */
   private setupVNCEventHandlers(sessionId: string, vncProtocol: any): void {
     // Handle framebuffer updates
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    vncProtocol.on('framebuffer-update', (update: any) => {
+    vncProtocol.on('framebuffer-update', (update: { data: Buffer; width: number; height: number; encoding: string }) => {
       const framebuffer = this.vncFramebuffers.get(sessionId);
       if (framebuffer) {
         framebuffer.data = update.data;
@@ -10598,14 +10597,13 @@ export class ConsoleManager extends EventEmitter implements CommandQueueHost {
     });
 
     // Handle VNC server messages
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    vncProtocol.on('server-message', (message: any) => {
+    vncProtocol.on('server-message', (message: { text?: string }) => {
       const output: ConsoleOutput = {
         sessionId,
         type: 'stdout',
         data: message.text || JSON.stringify(message),
         timestamp: new Date(),
-        raw: message,
+        raw: JSON.stringify(message),
       };
 
       const outputBuffer = this.outputBuffers.get(sessionId) || [];
@@ -10718,7 +10716,7 @@ export class ConsoleManager extends EventEmitter implements CommandQueueHost {
   /**
    * Get RDP protocol capabilities
    */
-  getRDPCapabilities(): any {
+  getRDPCapabilities(): unknown {
     return this.rdpProtocol.getCapabilities();
   }
 
@@ -10743,13 +10741,13 @@ export class ConsoleManager extends EventEmitter implements CommandQueueHost {
   /**
    * Setup SFTP event handlers
    */
-  private setupSFTPEventHandlers(sessionId: string, sftpProtocol: any): void {
+  private setupSFTPEventHandlers(sessionId: string, sftpProtocol: IProtocol): void {
     sftpProtocol.on('connected', (connectionState: string) => {
       this.logger.info(`SFTP session ${sessionId} connected`);
       this.emit('sftp-connected', { sessionId, connectionState });
     });
 
-    sftpProtocol.on('transfer-progress', (progress: Record<string, unknown>) => {
+    sftpProtocol.on('transfer-progress', (progress: { status: string; transferredBytes?: number }) => {
       this.updateTransferSessionStats(sessionId, progress);
       this.emit('sftp-transfer-progress', { sessionId, progress });
     });
@@ -10763,14 +10761,14 @@ export class ConsoleManager extends EventEmitter implements CommandQueueHost {
   /**
    * Update transfer session statistics
    */
-  private updateTransferSessionStats(sessionId: string, progress: any): void {
+  private updateTransferSessionStats(sessionId: string, progress: { status: string; transferredBytes?: number }): void {
     const transferSession = this.fileTransferSessions.get(sessionId);
     if (!transferSession) return;
 
     if (progress.status === 'completed') {
       transferSession.transferStats.successfulTransfers++;
       transferSession.transferStats.totalBytesTransferred +=
-        progress.transferredBytes;
+        progress.transferredBytes || 0;
     } else if (progress.status === 'failed') {
       transferSession.transferStats.failedTransfers++;
     }
@@ -10807,7 +10805,7 @@ export class ConsoleManager extends EventEmitter implements CommandQueueHost {
     localPath: string,
     remotePath: string,
     options?: SFTPTransferOptions
-  ): Promise<any> {
+  ): Promise<unknown> {
     const sftpProtocol = this.getSFTPProtocol(sessionId);
     if (!sftpProtocol) {
       throw new Error(`SFTP session not found: ${sessionId}`);
@@ -10823,7 +10821,7 @@ export class ConsoleManager extends EventEmitter implements CommandQueueHost {
     remotePath: string,
     localPath: string,
     options?: SFTPTransferOptions
-  ): Promise<any> {
+  ): Promise<unknown> {
     const sftpProtocol = this.getSFTPProtocol(sessionId);
     if (!sftpProtocol) {
       throw new Error(`SFTP session not found: ${sessionId}`);
@@ -11369,7 +11367,7 @@ export class ConsoleManager extends EventEmitter implements CommandQueueHost {
     });
 
     // Handle sensor data
-    ipmiSession.on('sensor-data', (sensorData: any) => {
+    ipmiSession.on('sensor-data', (sensorData: unknown) => {
       this.emit('sensor-data', {
         sessionId,
         sensorData,
@@ -11387,7 +11385,7 @@ export class ConsoleManager extends EventEmitter implements CommandQueueHost {
     });
 
     // Handle IPMI events
-    ipmiSession.on('ipmi-event', (event: any) => {
+    ipmiSession.on('ipmi-event', (event: unknown) => {
       this.emit('ipmi-event', {
         sessionId,
         event,
@@ -11547,7 +11545,7 @@ export class ConsoleManager extends EventEmitter implements CommandQueueHost {
   async executeIPMIPowerControl(
     sessionId: string,
     operation: 'on' | 'off' | 'reset' | 'cycle' | 'status'
-  ): Promise<any> {
+  ): Promise<unknown> {
     const ipmiState = this.ipmiSessions.get(sessionId);
     if (!ipmiState) {
       throw new Error(`IPMI session ${sessionId} not found or inactive`);
@@ -11588,7 +11586,7 @@ export class ConsoleManager extends EventEmitter implements CommandQueueHost {
   /**
    * Read IPMI sensors
    */
-  async readIPMISensors(sessionId: string): Promise<any[]> {
+  async readIPMISensors(sessionId: string): Promise<unknown[]> {
     const ipmiState = this.ipmiSessions.get(sessionId);
     if (!ipmiState) {
       throw new Error(`IPMI session ${sessionId} not found or inactive`);
@@ -11607,7 +11605,7 @@ export class ConsoleManager extends EventEmitter implements CommandQueueHost {
 
       // Since executeCommand returns void, return a placeholder array
       // In a real implementation, this would be handled via events or callbacks
-      const sensors: any[] = [];
+      const sensors: unknown[] = [];
       this.logger.debug(
         `Executed sensor reading command for IPMI session ${sessionId}`
       );
@@ -11625,7 +11623,7 @@ export class ConsoleManager extends EventEmitter implements CommandQueueHost {
   /**
    * Get IPMI system event log
    */
-  async getIPMIEventLog(sessionId: string): Promise<any[]> {
+  async getIPMIEventLog(sessionId: string): Promise<unknown[]> {
     const ipmiState = this.ipmiSessions.get(sessionId);
     if (!ipmiState) {
       throw new Error(`IPMI session ${sessionId} not found or inactive`);
@@ -11641,7 +11639,7 @@ export class ConsoleManager extends EventEmitter implements CommandQueueHost {
 
       // Since executeCommand returns void, return a placeholder array
       // In a real implementation, this would be handled via events or callbacks
-      const events: any[] = [];
+      const events: unknown[] = [];
       this.logger.debug(
         `Executed event log reading command for IPMI session ${sessionId}`
       );
@@ -11793,7 +11791,7 @@ export class ConsoleManager extends EventEmitter implements CommandQueueHost {
   /**
    * Get IPMI system information
    */
-  async getIPMISystemInfo(sessionId: string): Promise<any> {
+  async getIPMISystemInfo(sessionId: string): Promise<unknown> {
     const ipmiState = this.ipmiSessions.get(sessionId);
     if (!ipmiState) {
       throw new Error(`IPMI session ${sessionId} not found or inactive`);
@@ -11826,7 +11824,7 @@ export class ConsoleManager extends EventEmitter implements CommandQueueHost {
   async configureIPMILAN(
     sessionId: string,
     channel: number,
-    settings: any
+    settings: Record<string, unknown>
   ): Promise<void> {
     const ipmiState = this.ipmiSessions.get(sessionId);
     if (!ipmiState) {
