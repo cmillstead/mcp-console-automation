@@ -22,10 +22,39 @@ import {
   ConsoleOutput,
   ConsoleEvent,
   ConsoleSession,
+  ConsoleType,
+  SessionOptions,
 } from '../types/index.js';
+import { BaseProtocol } from '../core/BaseProtocol.js';
+import { ProtocolCapabilities, SessionState } from '../core/IProtocol.js';
 
-export class WebSocketTerminalProtocol extends EventEmitter {
-  private sessions: Map<string, WebSocketTerminalSession> = new Map();
+export class WebSocketTerminalProtocol extends BaseProtocol {
+  public readonly type: ConsoleType = 'websocket-term';
+  public readonly capabilities: ProtocolCapabilities = {
+    supportsStreaming: true,
+    supportsFileTransfer: true,
+    supportsX11Forwarding: false,
+    supportsPortForwarding: false,
+    supportsAuthentication: true,
+    supportsEncryption: true,
+    supportsCompression: true,
+    supportsMultiplexing: true,
+    supportsKeepAlive: true,
+    supportsReconnection: true,
+    supportsBinaryData: true,
+    supportsCustomEnvironment: false,
+    supportsWorkingDirectory: false,
+    supportsSignals: false,
+    supportsResizing: true,
+    supportsPTY: true,
+    maxConcurrentSessions: 20,
+    defaultTimeout: 30000,
+    supportedEncodings: ['utf8'],
+    supportedAuthMethods: ['token', 'password', 'certificate'],
+    platformSupport: { windows: true, linux: true, macos: true, freebsd: true },
+  };
+
+  private wsSessionDetails: Map<string, WebSocketTerminalSession> = new Map();
   private config: WebSocketTerminalProtocolConfig;
   private reconnectTimers: Map<string, NodeJS.Timeout> = new Map();
   private pingIntervals: Map<string, NodeJS.Timeout> = new Map();
@@ -33,9 +62,35 @@ export class WebSocketTerminalProtocol extends EventEmitter {
   private persistenceStore: Map<string, any> = new Map();
 
   constructor(config?: Partial<WebSocketTerminalProtocolConfig>) {
-    super();
+    super('WebSocketTerminalProtocol');
     this.config = this.createDefaultConfig(config);
     this.setupEventHandlers();
+  }
+
+  async initialize(): Promise<void> {
+    this.isInitialized = true;
+  }
+
+  async dispose(): Promise<void> {
+    // Clear all reconnect timers
+    this.reconnectTimers.forEach((timer) => clearTimeout(timer));
+    this.reconnectTimers.clear();
+
+    // Clear all ping intervals
+    this.pingIntervals.forEach((interval) => clearInterval(interval));
+    this.pingIntervals.clear();
+
+    // Close all WebSocket sessions
+    const sessionIds = Array.from(this.wsSessionDetails.keys());
+    await Promise.all(
+      sessionIds.map((id) =>
+        this.closeSession(id).catch((err) =>
+          this.logger.error(`Failed to close session ${id}:`, err)
+        )
+      )
+    );
+
+    await this.cleanup();
   }
 
   private createDefaultConfig(
@@ -156,13 +211,50 @@ export class WebSocketTerminalProtocol extends EventEmitter {
     this.on('session_created', this.handleSessionCreated.bind(this));
     this.on('session_closed', this.handleSessionClosed.bind(this));
     this.on('message_received', this.handleMessageReceived.bind(this));
-    this.on('error', this.handleError.bind(this));
+    this.on('error', this.handleWsError.bind(this));
   }
 
   /**
-   * Create a new WebSocket terminal session
+   * Create a new WebSocket terminal session (BaseProtocol interface)
    */
-  async createSession(
+  async createSession(options: SessionOptions): Promise<ConsoleSession> {
+    const sessionId = randomBytes(16).toString('hex');
+    return this.createSessionWithTypeDetection(sessionId, options);
+  }
+
+  /**
+   * Create session implementation for BaseProtocol
+   */
+  protected async doCreateSession(
+    sessionId: string,
+    options: SessionOptions,
+    sessionState: SessionState
+  ): Promise<ConsoleSession> {
+    const consoleSession: ConsoleSession = {
+      id: sessionId,
+      type: this.type,
+      status: 'running',
+      command: options.command,
+      args: options.args || [],
+      cwd: options.cwd || process.cwd(),
+      env: options.env || {},
+      streaming: options.streaming,
+      createdAt: new Date(),
+      lastActivity: new Date(),
+      executionState: 'idle',
+      activeCommands: new Map(),
+    };
+
+    this.sessions.set(sessionId, consoleSession);
+    this.outputBuffers.set(sessionId, []);
+
+    return consoleSession;
+  }
+
+  /**
+   * Create a new WebSocket terminal session with WebSocket-specific options
+   */
+  async createWsSession(
     sessionId: string,
     options: WebSocketTerminalConnectionOptions
   ): Promise<WebSocketTerminalSession> {
@@ -173,21 +265,38 @@ export class WebSocketTerminalProtocol extends EventEmitter {
       await this.validateConnectionOptions(options);
 
       // Create session state
-      const sessionState = this.createSessionState(sessionId, options);
+      const wsSessionState = this.createSessionState(sessionId, options);
 
       // Create WebSocket terminal session
       const session = new WebSocketTerminalSession(
         sessionId,
         options,
-        sessionState,
+        wsSessionState,
         this.config
       );
 
       // Setup session event handlers
       this.setupSessionEventHandlers(session);
 
-      // Store session
-      this.sessions.set(sessionId, session);
+      // Store WebSocket-specific session details
+      this.wsSessionDetails.set(sessionId, session);
+
+      // Also store a ConsoleSession wrapper in the inherited sessions map
+      const consoleSession: ConsoleSession = {
+        id: sessionId,
+        type: this.type,
+        status: 'running',
+        command: 'websocket',
+        args: [options.url],
+        cwd: process.cwd(),
+        env: {},
+        createdAt: new Date(),
+        lastActivity: new Date(),
+        executionState: 'idle',
+        activeCommands: new Map(),
+      };
+      this.sessions.set(sessionId, consoleSession);
+      this.outputBuffers.set(sessionId, []);
 
       // Connect to WebSocket
       await session.connect();
@@ -202,43 +311,59 @@ export class WebSocketTerminalProtocol extends EventEmitter {
   }
 
   /**
-   * Get existing session
+   * Get existing WebSocket session details
    */
-  getSession(sessionId: string): WebSocketTerminalSession | undefined {
-    return this.sessions.get(sessionId);
+  getWsSession(sessionId: string): WebSocketTerminalSession | undefined {
+    return this.wsSessionDetails.get(sessionId);
   }
 
   /**
    * Close session
    */
   async closeSession(sessionId: string): Promise<void> {
-    const session = this.sessions.get(sessionId);
-    if (session) {
-      await session.disconnect();
-      this.sessions.delete(sessionId);
-
-      // Clean up timers
-      const reconnectTimer = this.reconnectTimers.get(sessionId);
-      if (reconnectTimer) {
-        clearTimeout(reconnectTimer);
-        this.reconnectTimers.delete(sessionId);
-      }
-
-      const pingInterval = this.pingIntervals.get(sessionId);
-      if (pingInterval) {
-        clearInterval(pingInterval);
-        this.pingIntervals.delete(sessionId);
-      }
-
-      this.emit('session_closed', { sessionId });
+    const wsSession = this.wsSessionDetails.get(sessionId);
+    if (wsSession) {
+      await wsSession.disconnect();
+      this.wsSessionDetails.delete(sessionId);
     }
+
+    // Remove from inherited sessions map
+    this.sessions.delete(sessionId);
+    this.outputBuffers.delete(sessionId);
+
+    // Clean up timers
+    const reconnectTimer = this.reconnectTimers.get(sessionId);
+    if (reconnectTimer) {
+      clearTimeout(reconnectTimer);
+      this.reconnectTimers.delete(sessionId);
+    }
+
+    const pingInterval = this.pingIntervals.get(sessionId);
+    if (pingInterval) {
+      clearInterval(pingInterval);
+      this.pingIntervals.delete(sessionId);
+    }
+
+    this.emit('session_closed', { sessionId });
+  }
+
+  /**
+   * Execute command via WebSocket terminal
+   */
+  async executeCommand(
+    sessionId: string,
+    command: string,
+    args?: string[]
+  ): Promise<void> {
+    const fullCommand = args ? `${command} ${args.join(' ')}` : command;
+    await this.sendInput(sessionId, fullCommand + '\n');
   }
 
   /**
    * Send data to terminal
    */
   async sendData(sessionId: string, data: string | Buffer): Promise<void> {
-    const session = this.sessions.get(sessionId);
+    const session = this.wsSessionDetails.get(sessionId);
     if (!session) {
       throw new Error(`Session ${sessionId} not found`);
     }
@@ -247,7 +372,7 @@ export class WebSocketTerminalProtocol extends EventEmitter {
   }
 
   /**
-   * Send input to terminal (alias for sendData for compatibility)
+   * Send input to terminal
    */
   async sendInput(sessionId: string, input: string): Promise<void> {
     await this.sendData(sessionId, input);
@@ -257,7 +382,7 @@ export class WebSocketTerminalProtocol extends EventEmitter {
    * Reconnect session
    */
   async reconnectSession(sessionId: string): Promise<void> {
-    const session = this.sessions.get(sessionId);
+    const session = this.wsSessionDetails.get(sessionId);
     if (!session) {
       throw new Error(`Session ${sessionId} not found`);
     }
@@ -273,7 +398,7 @@ export class WebSocketTerminalProtocol extends EventEmitter {
     cols: number,
     rows: number
   ): Promise<void> {
-    const session = this.sessions.get(sessionId);
+    const session = this.wsSessionDetails.get(sessionId);
     if (!session) {
       throw new Error(`Session ${sessionId} not found`);
     }
@@ -290,7 +415,7 @@ export class WebSocketTerminalProtocol extends EventEmitter {
     remotePath: string,
     protocol?: string
   ): Promise<string> {
-    const session = this.sessions.get(sessionId);
+    const session = this.wsSessionDetails.get(sessionId);
     if (!session) {
       throw new Error(`Session ${sessionId} not found`);
     }
@@ -307,7 +432,7 @@ export class WebSocketTerminalProtocol extends EventEmitter {
     localPath: string,
     protocol?: string
   ): Promise<string> {
-    const session = this.sessions.get(sessionId);
+    const session = this.wsSessionDetails.get(sessionId);
     if (!session) {
       throw new Error(`Session ${sessionId} not found`);
     }
@@ -369,7 +494,7 @@ export class WebSocketTerminalProtocol extends EventEmitter {
     parentSessionId: string,
     title?: string
   ): Promise<string> {
-    const parentSession = this.sessions.get(parentSessionId);
+    const parentSession = this.wsSessionDetails.get(parentSessionId);
     if (!parentSession) {
       throw new Error(`Parent session ${parentSessionId} not found`);
     }
@@ -384,7 +509,7 @@ export class WebSocketTerminalProtocol extends EventEmitter {
     parentSessionId: string,
     multiplexSessionId: string
   ): Promise<void> {
-    const parentSession = this.sessions.get(parentSessionId);
+    const parentSession = this.wsSessionDetails.get(parentSessionId);
     if (!parentSession) {
       throw new Error(`Parent session ${parentSessionId} not found`);
     }
@@ -498,7 +623,7 @@ export class WebSocketTerminalProtocol extends EventEmitter {
     if (!this.config.keepAliveEnabled) return;
 
     const interval = setInterval(async () => {
-      const session = this.sessions.get(sessionId);
+      const session = this.wsSessionDetails.get(sessionId);
       if (session) {
         await session.ping();
       } else {
@@ -540,7 +665,7 @@ export class WebSocketTerminalProtocol extends EventEmitter {
     }
   }
 
-  private handleError(event: { sessionId: string; error: Error }): void {
+  private handleWsError(event: { sessionId: string; error: Error }): void {
     this.log(
       'error',
       `Session error ${event.sessionId}: ${event.error.message}`
@@ -563,17 +688,10 @@ export class WebSocketTerminalProtocol extends EventEmitter {
   }
 
   /**
-   * Get all active sessions
+   * Get all WebSocket session details
    */
-  getAllSessions(): WebSocketTerminalSession[] {
-    return Array.from(this.sessions.values());
-  }
-
-  /**
-   * Get session count
-   */
-  getSessionCount(): number {
-    return this.sessions.size;
+  getAllWsSessions(): WebSocketTerminalSession[] {
+    return Array.from(this.wsSessionDetails.values());
   }
 
   /**
@@ -582,22 +700,19 @@ export class WebSocketTerminalProtocol extends EventEmitter {
   async cleanup(): Promise<void> {
     this.log('info', 'Cleaning up WebSocket terminal protocol');
 
-    // Close all sessions
-    const sessionIds = Array.from(this.sessions.keys());
-    await Promise.all(sessionIds.map((id) => this.closeSession(id)));
-
     // Clear all timers
     this.reconnectTimers.forEach((timer) => clearTimeout(timer));
     this.pingIntervals.forEach((interval) => clearInterval(interval));
 
-    // Clear maps
-    this.sessions.clear();
+    // Clear WebSocket-specific maps
+    this.wsSessionDetails.clear();
     this.reconnectTimers.clear();
     this.pingIntervals.clear();
     this.latencyMeasurements.clear();
     this.persistenceStore.clear();
 
-    this.removeAllListeners();
+    // Call BaseProtocol cleanup (handles sessions, outputBuffers, listeners)
+    await super.cleanup();
   }
 }
 

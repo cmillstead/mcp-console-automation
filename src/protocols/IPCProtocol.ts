@@ -1,4 +1,3 @@
-import { EventEmitter } from 'events';
 import { Socket, createServer, Server, connect } from 'net';
 import { platform } from 'os';
 import {
@@ -21,8 +20,11 @@ import {
   IPCMessage,
   ConsoleSession,
   ConsoleOutput,
+  ConsoleType,
+  SessionOptions,
 } from '../types/index.js';
-import { Logger } from '../utils/logger.js';
+import { BaseProtocol } from '../core/BaseProtocol.js';
+import { ProtocolCapabilities, SessionState } from '../core/IProtocol.js';
 
 const unlinkAsync = promisify(unlink);
 const accessAsync = promisify(access);
@@ -45,8 +47,32 @@ const inflateAsync = promisify(inflate);
  * - Bidirectional communication
  * - Stream and datagram modes
  */
-export class IPCProtocol extends EventEmitter {
-  private logger: Logger;
+export class IPCProtocol extends BaseProtocol {
+  public readonly type: ConsoleType = 'ipc';
+  public readonly capabilities: ProtocolCapabilities = {
+    supportsStreaming: true,
+    supportsFileTransfer: false,
+    supportsX11Forwarding: false,
+    supportsPortForwarding: false,
+    supportsAuthentication: false,
+    supportsEncryption: true,
+    supportsCompression: true,
+    supportsMultiplexing: false,
+    supportsKeepAlive: true,
+    supportsReconnection: true,
+    supportsBinaryData: true,
+    supportsCustomEnvironment: false,
+    supportsWorkingDirectory: false,
+    supportsSignals: false,
+    supportsResizing: false,
+    supportsPTY: false,
+    maxConcurrentSessions: 50,
+    defaultTimeout: 30000,
+    supportedEncodings: ['utf8', 'binary'],
+    supportedAuthMethods: [],
+    platformSupport: { windows: true, linux: true, macos: true, freebsd: true },
+  };
+
   private options: IPCConnectionOptions;
   private sessionState: IPCSessionState;
   private socket?: Socket;
@@ -72,17 +98,19 @@ export class IPCProtocol extends EventEmitter {
   private dockerClient?: any;
 
   constructor(options: IPCConnectionOptions) {
-    super();
+    super('IPCProtocol');
     this.options = options;
-    this.logger = new Logger('IPCProtocol');
+
+    const ipcType = this.detectIPCType();
+    const mode = this.options.mode || 'stream';
 
     this.sessionState = {
       sessionId: this.generateSessionId(),
       connectionState: 'disconnected',
-      ipcType: this.detectIPCType(),
+      ipcType,
       endpoint: options.path,
       connectionInfo: {
-        protocol: this.getProtocolName(),
+        protocol: `${ipcType}-${mode}`,
         established: new Date(),
         lastActivity: new Date(),
       },
@@ -1151,9 +1179,9 @@ WScript.Echo "{""status"": ""connected"", ""progId"": ""${comOptions.progId}""}"
   }
 
   /**
-   * Get session state
+   * Get IPC-specific session state
    */
-  getSessionState(): IPCSessionState {
+  getIPCSessionState(): IPCSessionState {
     return { ...this.sessionState };
   }
 
@@ -1170,6 +1198,95 @@ WScript.Echo "{""status"": ""connected"", ""progId"": ""${comOptions.progId}""}"
       queuedMessages: this.messageQueue.size,
     };
   }
+
+  // ── BaseProtocol abstract method implementations ───────────────────
+
+  async initialize(): Promise<void> {
+    this.isInitialized = true;
+  }
+
+  async dispose(): Promise<void> {
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = undefined;
+    }
+
+    if (this.keepAliveTimer) {
+      clearInterval(this.keepAliveTimer);
+      this.keepAliveTimer = undefined;
+    }
+
+    if (this.socket) {
+      this.socket.destroy();
+      this.socket = undefined;
+    }
+
+    if (this.server) {
+      this.server.close();
+      this.server = undefined;
+    }
+
+    await this.cleanup();
+  }
+
+  async createSession(options: SessionOptions): Promise<ConsoleSession> {
+    const sessionId = this.generateSessionId();
+    return this.createSessionWithTypeDetection(sessionId, options);
+  }
+
+  async closeSession(sessionId: string): Promise<void> {
+    await this.disconnect();
+    this.sessions.delete(sessionId);
+    this.outputBuffers.delete(sessionId);
+  }
+
+  async executeCommand(
+    sessionId: string,
+    command: string,
+    args?: string[]
+  ): Promise<void> {
+    const payload = args ? { command, args } : { command };
+    await this.sendMessage(payload, { type: 'command' });
+
+    // Store a placeholder output entry so callers know a command was sent
+    this.addToOutputBuffer(sessionId, {
+      type: 'stdout',
+      data: '',
+      timestamp: new Date(),
+      sessionId,
+    });
+  }
+
+  async sendInput(sessionId: string, input: string): Promise<void> {
+    await this.sendMessage({ input }, { type: 'command' });
+  }
+
+  protected async doCreateSession(
+    sessionId: string,
+    options: SessionOptions,
+    sessionState: SessionState
+  ): Promise<ConsoleSession> {
+    const session: ConsoleSession = {
+      id: sessionId,
+      type: this.type,
+      status: 'running',
+      command: options.command,
+      args: options.args || [],
+      cwd: options.cwd || process.cwd(),
+      env: options.env || {},
+      streaming: options.streaming ?? true,
+      createdAt: new Date(),
+      executionState: 'idle',
+      activeCommands: new Map(),
+    };
+
+    this.sessions.set(sessionId, session);
+    this.outputBuffers.set(sessionId, []);
+
+    return session;
+  }
+
+  // ── Original IPC methods ──────────────────────────────────────────
 
   /**
    * Cleanup and disconnect
@@ -1226,7 +1343,6 @@ WScript.Echo "{""status"": ""connected"", ""progId"": ""${comOptions.progId}""}"
    * Destroy the protocol instance
    */
   destroy(): void {
-    this.disconnect();
-    this.removeAllListeners();
+    this.dispose();
   }
 }

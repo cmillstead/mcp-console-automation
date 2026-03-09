@@ -1,4 +1,3 @@
-import { EventEmitter } from 'events';
 import { Client as SSHClient } from 'ssh2';
 import SFTPClient = require('ssh2-sftp-client');
 import { promises as fs, createReadStream, createWriteStream, Stats } from 'fs';
@@ -26,8 +25,13 @@ import {
   SFTPConnectionState,
   SCPTransferOptions,
   FileTransferSession,
+  ConsoleType,
+  SessionOptions,
+  ConsoleSession,
 } from '../types/index.js';
-import { Logger } from '../utils/logger.js';
+import { BaseProtocol } from '../core/BaseProtocol.js';
+import { ProtocolNotSupportedError } from '../core/ProtocolNotSupportedError.js';
+import { ProtocolCapabilities, SessionState } from '../core/IProtocol.js';
 import { RetryManager } from '../core/RetryManager.js';
 import { ErrorRecovery } from '../core/ErrorRecovery.js';
 
@@ -46,10 +50,35 @@ import { ErrorRecovery } from '../core/ErrorRecovery.js';
  * - File integrity verification with checksums
  * - Connection pooling and keep-alive management
  */
-export class SFTPProtocol extends EventEmitter {
+export class SFTPProtocol extends BaseProtocol {
+  public readonly type: ConsoleType = 'sftp';
+  public readonly capabilities: ProtocolCapabilities = {
+    supportsStreaming: false,
+    supportsFileTransfer: true,
+    supportsX11Forwarding: false,
+    supportsPortForwarding: false,
+    supportsAuthentication: true,
+    supportsEncryption: true,
+    supportsCompression: true,
+    supportsMultiplexing: false,
+    supportsKeepAlive: true,
+    supportsReconnection: true,
+    supportsBinaryData: true,
+    supportsCustomEnvironment: false,
+    supportsWorkingDirectory: false,
+    supportsSignals: false,
+    supportsResizing: false,
+    supportsPTY: false,
+    maxConcurrentSessions: 5,
+    defaultTimeout: 30000,
+    supportedEncodings: ['utf8', 'binary'],
+    supportedAuthMethods: ['password', 'publickey', 'agent'],
+    platformSupport: { windows: true, linux: true, macos: true, freebsd: true },
+  };
+
   private sshClient: SSHClient | null = null;
   private sftpClient: SFTPClient | null = null;
-  private sessionId: string;
+  private currentSessionId: string | null = null;
   private options: SFTPSessionOptions;
   private connectionState: SFTPConnectionState;
   private transferQueue: PQueue;
@@ -58,7 +87,6 @@ export class SFTPProtocol extends EventEmitter {
   private activeBatches: Map<string, SFTPBatchTransfer>;
   private resumeData: Map<string, any>;
   private bandwidthController: BandwidthController;
-  private logger: Logger;
   private retryManager: RetryManager;
   private errorRecovery: ErrorRecovery;
   private keepAliveTimer: NodeJS.Timeout | null = null;
@@ -70,9 +98,8 @@ export class SFTPProtocol extends EventEmitter {
   public readonly directories: SFTPDirectoryOperations;
   public readonly files: SFTPFileOperations;
 
-  constructor(sessionId: string, options: SFTPSessionOptions) {
-    super();
-    this.sessionId = sessionId;
+  constructor(options: SFTPSessionOptions) {
+    super('SFTPProtocol');
     this.options = {
       maxConcurrentTransfers: 3,
       transferQueue: {
@@ -92,7 +119,6 @@ export class SFTPProtocol extends EventEmitter {
       ...options,
     };
 
-    this.logger = new Logger(`SFTPProtocol-${sessionId}`);
     this.retryManager = new RetryManager();
     this.errorRecovery = new ErrorRecovery();
 
@@ -118,9 +144,9 @@ export class SFTPProtocol extends EventEmitter {
       this.options.bandwidth || {}
     );
 
-    // Initialize connection state
+    // Initialize connection state (sessionId set when createSession is called)
     this.connectionState = {
-      sessionId,
+      sessionId: '',
       isConnected: false,
       connectionTime: new Date(),
       lastActivity: new Date(),
@@ -151,6 +177,114 @@ export class SFTPProtocol extends EventEmitter {
     this.setupEventHandlers();
   }
 
+  // ── BaseProtocol lifecycle methods ──────────────────────────────────
+
+  async initialize(): Promise<void> {
+    this.isInitialized = true;
+  }
+
+  async dispose(): Promise<void> {
+    // Stop keep-alive and health checks
+    if (this.keepAliveTimer) {
+      clearInterval(this.keepAliveTimer);
+      this.keepAliveTimer = null;
+    }
+
+    if (this.healthCheckTimer) {
+      clearInterval(this.healthCheckTimer);
+      this.healthCheckTimer = null;
+    }
+
+    // Disconnect SSH/SFTP clients
+    if (this.sftpClient) {
+      try {
+        await this.sftpClient.end();
+      } catch (error) {
+        this.logger.warn('Error closing SFTP client during dispose:', error);
+      }
+      this.sftpClient = null;
+    }
+
+    if (this.sshClient) {
+      this.sshClient.end();
+      this.sshClient = null;
+    }
+
+    await this.cleanup();
+  }
+
+  async createSession(options: SessionOptions): Promise<ConsoleSession> {
+    const sessionId = uuidv4();
+    this.currentSessionId = sessionId;
+    this.connectionState.sessionId = sessionId;
+
+    // Connect SFTP
+    await this.connect();
+
+    // Use BaseProtocol's session type detection helper
+    const session = await this.createSessionWithTypeDetection(sessionId, options);
+    this.sessions.set(sessionId, session);
+
+    return session;
+  }
+
+  async closeSession(sessionId: string): Promise<void> {
+    await this.disconnect();
+    this.sessions.delete(sessionId);
+    this.outputBuffers.delete(sessionId);
+    if (this.currentSessionId === sessionId) {
+      this.currentSessionId = null;
+    }
+  }
+
+  async executeCommand(
+    _sessionId: string,
+    _command: string,
+    _args?: string[]
+  ): Promise<void> {
+    throw new ProtocolNotSupportedError('executeCommand', this.type);
+  }
+
+  async sendInput(_sessionId: string, _input: string): Promise<void> {
+    throw new ProtocolNotSupportedError('sendInput', this.type);
+  }
+
+  async getOutput(
+    _sessionId: string,
+    _since?: Date
+  ): Promise<import('../types/index.js').ConsoleOutput[]> {
+    throw new ProtocolNotSupportedError('getOutput', this.type);
+  }
+
+  protected async doCreateSession(
+    sessionId: string,
+    options: SessionOptions,
+    sessionState: SessionState
+  ): Promise<ConsoleSession> {
+    const session: ConsoleSession = {
+      id: sessionId,
+      command: 'sftp',
+      args: [
+        `${this.options.username}@${this.options.host}`,
+        `-P`,
+        String(this.options.port || 22),
+      ],
+      cwd: options.cwd || process.cwd(),
+      env: options.env || {},
+      createdAt: new Date(),
+      status: 'running',
+      type: 'sftp',
+      streaming: false,
+      lastActivity: new Date(),
+      executionState: 'idle',
+      activeCommands: new Map(),
+    };
+
+    return session;
+  }
+
+  // ── SFTP-specific public methods ───────────────────────────────────
+
   /**
    * Establish SFTP connection over SSH
    */
@@ -172,7 +306,7 @@ export class SFTPProtocol extends EventEmitter {
       await this.retryManager.executeWithRetry(
         () => this.establishConnection(),
         {
-          sessionId: this.sessionId,
+          sessionId: this.currentSessionId || 'sftp',
           operationName: 'sftp_connect',
           strategyName: 'sftp',
           context: { host: this.options.host, port: this.options.port },
@@ -256,7 +390,7 @@ export class SFTPProtocol extends EventEmitter {
     const transferId = uuidv4();
     const progress: SFTPTransferProgress = {
       transferId,
-      sessionId: this.sessionId,
+      sessionId: this.currentSessionId || '',
       operation: 'upload',
       status: 'queued',
       source: localPath,
@@ -290,7 +424,7 @@ export class SFTPProtocol extends EventEmitter {
     const transferId = uuidv4();
     const progress: SFTPTransferProgress = {
       transferId,
-      sessionId: this.sessionId,
+      sessionId: this.currentSessionId || '',
       operation: 'download',
       status: 'queued',
       source: remotePath,
@@ -322,7 +456,7 @@ export class SFTPProtocol extends EventEmitter {
     const batchId = uuidv4();
     const batch: SFTPBatchTransfer = {
       batchId,
-      sessionId: this.sessionId,
+      sessionId: this.currentSessionId || '',
       transfers,
       concurrency: Math.min(
         transfers.length,
@@ -362,7 +496,7 @@ export class SFTPProtocol extends EventEmitter {
 
     const result: SFTPSyncResult = {
       syncId,
-      sessionId: this.sessionId,
+      sessionId: this.currentSessionId || '',
       options,
       summary: {
         filesTransferred: 0,
@@ -1098,15 +1232,19 @@ export class SFTPProtocol extends EventEmitter {
   }
 
   private setupEventHandlers(): void {
-    this.transferQueue.on('active', () => {
-      this.connectionState.activeTransfers = this.activeTransfers.size;
-      this.emit('queue-active', this.getConnectionState());
-    });
+    // PQueue emits 'active' and 'idle' events — guard in case the import
+    // resolves to a CJS shim without EventEmitter support (e.g. in Jest).
+    if (typeof this.transferQueue.on === 'function') {
+      this.transferQueue.on('active', () => {
+        this.connectionState.activeTransfers = this.activeTransfers.size;
+        this.emit('queue-active', this.getConnectionState());
+      });
 
-    this.transferQueue.on('idle', () => {
-      this.connectionState.activeTransfers = this.activeTransfers.size;
-      this.emit('queue-idle', this.getConnectionState());
-    });
+      this.transferQueue.on('idle', () => {
+        this.connectionState.activeTransfers = this.activeTransfers.size;
+        this.emit('queue-idle', this.getConnectionState());
+      });
+    }
   }
 
   private startKeepAlive(): void {

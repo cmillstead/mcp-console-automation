@@ -224,3 +224,5 @@ export interface ResourceUsage {
     peak: number;
   };
 }
+
+export { ProtocolNotSupportedError } from './ProtocolNotSupportedError.js';
