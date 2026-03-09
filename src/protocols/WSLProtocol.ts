@@ -5,6 +5,9 @@ import { platform, homedir, tmpdir } from 'os';
 import { promisify } from 'util';
 import { exec } from 'child_process';
 
+import { BaseProtocol } from '../core/BaseProtocol.js';
+import { ProtocolNotSupportedError } from '../core/ProtocolNotSupportedError.js';
+import { ProtocolCapabilities, SessionState } from '../core/IProtocol.js';
 import {
   WSLConnectionOptions,
   WSLDistribution,
@@ -18,23 +21,51 @@ import {
   ConsoleSession,
   ConsoleOutput,
   SessionOptions,
+  ConsoleType,
   ExtendedErrorPattern,
   WSLErrorPattern,
 } from '../types/index.js';
 
 const execAsync = promisify(exec);
 
-export class WSLProtocol {
+export class WSLProtocol extends BaseProtocol {
   private static instance: WSLProtocol;
   private wslSystemInfo: WSLSystemInfo | null = null;
   private lastSystemInfoUpdate: Date = new Date(0);
   private readonly systemInfoCacheTimeout = 30000; // 30 seconds
   private readonly wslConfigPath: string;
-  private activeSessions: Map<string, WSLSession> = new Map();
+  private wslSessionDetails: Map<string, WSLSession> = new Map();
   private pathTranslationCache: Map<string, string> = new Map();
   private healthCheckIntervals: Map<string, NodeJS.Timeout> = new Map();
 
-  private constructor() {
+  public readonly type: ConsoleType = 'wsl';
+
+  public readonly capabilities: ProtocolCapabilities = {
+    supportsStreaming: true,
+    supportsFileTransfer: true,
+    supportsX11Forwarding: true,
+    supportsPortForwarding: true,
+    supportsAuthentication: false,
+    supportsEncryption: false,
+    supportsCompression: false,
+    supportsMultiplexing: false,
+    supportsKeepAlive: true,
+    supportsReconnection: true,
+    supportsBinaryData: true,
+    supportsCustomEnvironment: true,
+    supportsWorkingDirectory: true,
+    supportsSignals: true,
+    supportsResizing: true,
+    supportsPTY: true,
+    maxConcurrentSessions: 20,
+    defaultTimeout: 30000,
+    supportedEncodings: ['utf8'],
+    supportedAuthMethods: [],
+    platformSupport: { windows: true, linux: false, macos: false, freebsd: false },
+  };
+
+  public constructor() {
+    super('WSLProtocol');
     this.wslConfigPath = join(homedir(), '.wslconfig');
   }
 
@@ -48,7 +79,7 @@ export class WSLProtocol {
   /**
    * Initialize WSL protocol and verify WSL availability
    */
-  public async initialize(): Promise<boolean> {
+  public async initialize(): Promise<void> {
     try {
       // Check if WSL is installed and available
       const wslAvailable = await this.checkWSLAvailability();
@@ -63,11 +94,32 @@ export class WSLProtocol {
       // Initialize error patterns
       this.initializeErrorPatterns();
 
-      return true;
+      this.isInitialized = true;
     } catch (error) {
-      console.error('Failed to initialize WSL protocol:', error);
-      return false;
+      this.logger.error('Failed to initialize WSL protocol:', error);
+      throw error;
     }
+  }
+
+  /**
+   * Dispose of the protocol, cleaning up all sessions and health checks
+   */
+  public async dispose(): Promise<void> {
+    // Stop all health monitoring
+    for (const sessionId of Array.from(this.healthCheckIntervals.keys())) {
+      this.stopHealthMonitoring(sessionId);
+    }
+
+    // Close all sessions
+    for (const sessionId of Array.from(this.wslSessionDetails.keys())) {
+      try {
+        await this.closeSession(sessionId);
+      } catch (err) {
+        this.logger.error(`Failed to close session ${sessionId} during dispose:`, err);
+      }
+    }
+
+    await this.cleanup();
   }
 
   /**
@@ -80,31 +132,6 @@ export class WSLProtocol {
     }
     // Return true if we have system info, indicating WSL is available
     return this.wslSystemInfo !== null;
-  }
-
-  /**
-   * Get all active sessions (for BaseProtocol compatibility)
-   */
-  public getAllSessions(): ConsoleSession[] {
-    const sessions: ConsoleSession[] = [];
-    for (const [sessionId, wslSession] of this.activeSessions.entries()) {
-      sessions.push({
-        id: sessionId,
-        command: wslSession.command || 'wsl',
-        args: wslSession.args || [],
-        cwd: wslSession.cwd || '~',
-        env: wslSession.env || {},
-        createdAt: wslSession.createdAt,
-        status: wslSession.status as any,
-        type: 'wsl',
-        streaming: wslSession.streaming,
-        pid: wslSession.pid,
-        exitCode: wslSession.exitCode,
-        executionState: 'idle',
-        activeCommands: new Map(),
-      });
-    }
-    return sessions;
   }
 
   /**
@@ -431,9 +458,11 @@ export class WSLProtocol {
   }
 
   /**
-   * Create a new WSL session
+   * Create a new WSL session.
+   * Returns a ConsoleSession (stored in this.sessions from BaseProtocol).
+   * The WSL-specific details are stored in this.wslSessionDetails.
    */
-  public async createSession(options: SessionOptions): Promise<WSLSession> {
+  public async createSession(options: SessionOptions): Promise<ConsoleSession> {
     const wslOptions = options.wslOptions || {};
 
     // Ensure WSL is available
@@ -479,8 +508,8 @@ export class WSLProtocol {
       distribution
     );
 
-    // Create the session
-    const session: WSLSession = {
+    // Create the WSL-specific session details
+    const wslSession: WSLSession = {
       id: sessionId,
       command: command,
       args: args,
@@ -503,13 +532,50 @@ export class WSLProtocol {
       activeCommands: new Map(),
     };
 
-    // Store session
-    this.activeSessions.set(sessionId, session);
+    // Store WSL-specific session details
+    this.wslSessionDetails.set(sessionId, wslSession);
+
+    // Create and store the ConsoleSession in BaseProtocol's this.sessions
+    const consoleSession = await this.createSessionWithTypeDetection(sessionId, options);
 
     // Start health monitoring
     this.startHealthMonitoring(sessionId);
 
-    return session;
+    return consoleSession;
+  }
+
+  /**
+   * Implementation of doCreateSession for BaseProtocol.
+   * Creates a ConsoleSession record wrapping the WSL session.
+   */
+  protected async doCreateSession(
+    sessionId: string,
+    options: SessionOptions,
+    sessionState: SessionState
+  ): Promise<ConsoleSession> {
+    const wslSession = this.wslSessionDetails.get(sessionId);
+    if (!wslSession) {
+      throw new Error(`WSL session details not found for ${sessionId}`);
+    }
+
+    const consoleSession: ConsoleSession = {
+      id: sessionId,
+      command: wslSession.command || 'wsl',
+      args: wslSession.args || [],
+      cwd: wslSession.cwd || '~',
+      env: wslSession.env || {},
+      createdAt: wslSession.createdAt,
+      status: wslSession.status as any,
+      type: 'wsl',
+      streaming: wslSession.streaming,
+      pid: wslSession.pid,
+      exitCode: wslSession.exitCode,
+      executionState: 'idle',
+      activeCommands: new Map(),
+    };
+
+    this.sessions.set(sessionId, consoleSession);
+    return consoleSession;
   }
 
   /**
@@ -774,15 +840,48 @@ export class WSLProtocol {
   }
 
   /**
-   * Execute a command in WSL
+   * Execute a command in WSL (BaseProtocol-compatible, returns void).
+   * Stores output in this.outputBuffers via addToOutputBuffer().
    */
   public async executeCommand(
+    sessionId: string,
+    command: string,
+    args?: string[]
+  ): Promise<void> {
+    const result = await this.executeCommandWithResult(sessionId, command, args);
+
+    // Store stdout in output buffer
+    if (result.stdout) {
+      this.addToOutputBuffer(sessionId, {
+        type: 'stdout',
+        data: result.stdout,
+        timestamp: new Date(),
+        sessionId,
+      });
+    }
+
+    // Store stderr in output buffer
+    if (result.stderr) {
+      this.addToOutputBuffer(sessionId, {
+        type: 'stderr',
+        data: result.stderr,
+        timestamp: new Date(),
+        sessionId,
+      });
+    }
+  }
+
+  /**
+   * Execute a command in WSL and return the result with stdout, stderr, exitCode.
+   * This preserves the original return type for callers that need it.
+   */
+  public async executeCommandWithResult(
     sessionId: string,
     command: string,
     args?: string[],
     options?: { timeout?: number; cwd?: string }
   ): Promise<{ stdout: string; stderr: string; exitCode: number }> {
-    const session = this.activeSessions.get(sessionId);
+    const session = this.wslSessionDetails.get(sessionId);
     if (!session) {
       throw new Error(`Session ${sessionId} not found`);
     }
@@ -818,9 +917,24 @@ export class WSLProtocol {
   }
 
   /**
+   * Send input to the WSL session.
+   * Since WSL sessions use exec-based command execution (not persistent stdin),
+   * this executes the input as a command in the session's distribution.
+   */
+  public async sendInput(sessionId: string, input: string): Promise<void> {
+    const session = this.wslSessionDetails.get(sessionId);
+    if (!session) {
+      throw new Error(`Session ${sessionId} not found`);
+    }
+
+    // Execute the input as a command in the WSL session
+    await this.executeCommand(sessionId, input);
+  }
+
+  /**
    * Get health status for a distribution
    */
-  public async getHealthStatus(distribution: string): Promise<WSLHealthStatus> {
+  public async getDistributionHealthStatus(distribution: string): Promise<WSLHealthStatus> {
     const issues: WSLHealthIssue[] = [];
     let wslServiceRunning = false;
     let distributionResponsive = false;
@@ -986,12 +1100,12 @@ export class WSLProtocol {
    * Start health monitoring for a session
    */
   private startHealthMonitoring(sessionId: string): void {
-    const session = this.activeSessions.get(sessionId);
+    const session = this.wslSessionDetails.get(sessionId);
     if (!session) return;
 
     const interval = setInterval(async () => {
       try {
-        const healthStatus = await this.getHealthStatus(session.distribution);
+        const healthStatus = await this.getDistributionHealthStatus(session.distribution);
 
         // Handle critical issues
         if (
@@ -1009,7 +1123,7 @@ export class WSLProtocol {
           }
         }
       } catch (error) {
-        console.error(
+        this.logger.error(
           `Health monitoring failed for session ${sessionId}:`,
           error
         );
@@ -1040,7 +1154,7 @@ export class WSLProtocol {
 
         case 'network':
           // Try to restart network
-          await this.executeCommand(
+          await this.executeCommandWithResult(
             session.id,
             'sudo systemctl restart systemd-networkd',
             [],
@@ -1053,7 +1167,7 @@ export class WSLProtocol {
           break;
       }
     } catch (error) {
-      console.error(`Auto-recovery failed for ${session.id}:`, error);
+      this.logger.error(`Auto-recovery failed for ${session.id}:`, error);
     }
   }
 
@@ -1072,7 +1186,7 @@ export class WSLProtocol {
    * Close a WSL session
    */
   public async closeSession(sessionId: string): Promise<void> {
-    const session = this.activeSessions.get(sessionId);
+    const session = this.wslSessionDetails.get(sessionId);
     if (!session) {
       throw new Error(`Session ${sessionId} not found`);
     }
@@ -1083,8 +1197,15 @@ export class WSLProtocol {
     // Update session status
     session.status = 'stopped';
 
-    // Remove from active sessions
-    this.activeSessions.delete(sessionId);
+    // Update the ConsoleSession in BaseProtocol's sessions map
+    const consoleSession = this.sessions.get(sessionId);
+    if (consoleSession) {
+      consoleSession.status = 'stopped';
+    }
+
+    // Remove from both maps
+    this.wslSessionDetails.delete(sessionId);
+    this.sessions.delete(sessionId);
   }
 
   /**
@@ -1348,17 +1469,20 @@ export class WSLProtocol {
   }
 
   /**
-   * Cleanup resources
+   * Cleanup resources — overrides BaseProtocol's cleanup
    */
   public async cleanup(): Promise<void> {
     // Stop all health monitoring
-    Array.from(this.healthCheckIntervals.keys()).forEach((sessionId) => {
+    for (const sessionId of Array.from(this.healthCheckIntervals.keys())) {
       this.stopHealthMonitoring(sessionId);
-    });
+    }
 
-    // Clear caches
+    // Clear WSL-specific caches
     this.pathTranslationCache.clear();
-    this.activeSessions.clear();
+    this.wslSessionDetails.clear();
+
+    // Call BaseProtocol cleanup (clears sessions, outputBuffers, listeners, etc.)
+    await super.cleanup();
   }
 }
 
