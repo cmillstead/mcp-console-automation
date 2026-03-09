@@ -1,4 +1,3 @@
-import { EventEmitter } from 'events';
 import { spawn, ChildProcess } from 'child_process';
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
 import { join, dirname } from 'path';
@@ -22,12 +21,15 @@ import {
   ConsoleOutput,
   SessionOptions,
   ConsoleSession,
+  ConsoleType,
 } from '../types/index.js';
 import {
   ProtocolCapabilities,
   ProtocolHealthStatus,
+  SessionState,
 } from '../core/IProtocol.js';
-import { Logger } from '../utils/logger.js';
+import { BaseProtocol } from '../core/BaseProtocol.js';
+import { ProtocolNotSupportedError } from '../core/ProtocolNotSupportedError.js';
 
 // Import node-rdpjs-2 dynamically to handle potential missing dependency
 let rdp: any;
@@ -102,12 +104,34 @@ export interface RDPGatewayConfig {
   enableAuth: boolean;
 }
 
-export class RDPProtocol extends EventEmitter {
-  public readonly type = 'rdp' as const;
-  public readonly capabilities: ProtocolCapabilities;
+export class RDPProtocol extends BaseProtocol {
+  public readonly type: ConsoleType = 'rdp';
+  public readonly capabilities: ProtocolCapabilities = {
+    supportsStreaming: false,
+    supportsFileTransfer: true,
+    supportsX11Forwarding: false,
+    supportsPortForwarding: true,
+    supportsAuthentication: true,
+    supportsEncryption: true,
+    supportsCompression: true,
+    supportsMultiplexing: true,
+    supportsKeepAlive: true,
+    supportsReconnection: true,
+    supportsBinaryData: true,
+    supportsCustomEnvironment: false,
+    supportsWorkingDirectory: false,
+    supportsSignals: false,
+    supportsResizing: true,
+    supportsPTY: false,
+    maxConcurrentSessions: 10,
+    defaultTimeout: 30000,
+    supportedEncodings: ['utf8'],
+    supportedAuthMethods: ['password', 'smartcard', 'nla'],
+    platformSupport: { windows: true, linux: true, macos: true, freebsd: false },
+  };
+
   public readonly healthStatus: ProtocolHealthStatus;
-  private logger: Logger;
-  private sessions: Map<string, RDPSession> = new Map();
+  private rdpSessionDetails: Map<string, RDPSession> = new Map();
   private connections: Map<string, any> = new Map(); // RDP connection instances
   private fallbackProcesses: Map<string, ChildProcess> = new Map();
   private rdpCapabilities: RDPCapabilities;
@@ -117,37 +141,7 @@ export class RDPProtocol extends EventEmitter {
   private performanceMonitors: Map<string, NodeJS.Timeout> = new Map();
 
   constructor() {
-    super();
-    this.logger = new Logger('RDPProtocol');
-
-    this.capabilities = {
-      supportsStreaming: true,
-      supportsFileTransfer: true,
-      supportsX11Forwarding: false,
-      supportsPortForwarding: false,
-      supportsAuthentication: true,
-      supportsEncryption: true,
-      supportsCompression: true,
-      supportsMultiplexing: false,
-      supportsKeepAlive: true,
-      supportsReconnection: true,
-      supportsBinaryData: true,
-      supportsCustomEnvironment: false,
-      supportsWorkingDirectory: false,
-      supportsSignals: false,
-      supportsResizing: true,
-      supportsPTY: false,
-      maxConcurrentSessions: 1,
-      defaultTimeout: 30000,
-      supportedEncodings: ['utf-8'],
-      supportedAuthMethods: ['password', 'certificate'],
-      platformSupport: {
-        windows: true,
-        linux: true,
-        macos: true,
-        freebsd: false,
-      },
-    };
+    super('RDPProtocol');
 
     this.healthStatus = {
       isHealthy: true,
@@ -221,6 +215,65 @@ export class RDPProtocol extends EventEmitter {
   }
 
   /**
+   * Initialize the RDP protocol
+   */
+  async initialize(): Promise<void> {
+    this.isInitialized = true;
+  }
+
+  /**
+   * Override getOutput to throw ProtocolNotSupportedError — RDP is GUI/binary, not text
+   */
+  async getOutput(sessionId: string, since?: Date): Promise<ConsoleOutput[]> {
+    throw new ProtocolNotSupportedError('getOutput', this.type);
+  }
+
+  /**
+   * Create session via BaseProtocol's type-detection flow
+   */
+  async createSession(options: SessionOptions): Promise<ConsoleSession> {
+    return this.createSessionWithTypeDetection(
+      `rdp-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+      options
+    );
+  }
+
+  /**
+   * Implement doCreateSession — delegates to existing createRDPSession logic
+   */
+  protected async doCreateSession(
+    sessionId: string,
+    options: SessionOptions,
+    sessionState: SessionState
+  ): Promise<ConsoleSession> {
+    if (!options.rdpOptions) {
+      throw new Error('RDP options are required');
+    }
+
+    // Create the actual RDP session
+    await this.createRDPSession(sessionId, options.rdpOptions);
+
+    const session: ConsoleSession = {
+      id: sessionId,
+      command: options.command || '',
+      args: options.args || [],
+      cwd: '/',
+      env: options.environment || {},
+      createdAt: new Date(),
+      status: 'running',
+      type: 'rdp',
+      streaming: options.streaming ?? true,
+      rdpOptions: options.rdpOptions,
+      executionState: 'idle',
+      activeCommands: new Map(),
+    };
+
+    this.sessions.set(sessionId, session);
+    this.emit('sessionCreated', session);
+    return session;
+  }
+
+  /**
    * Create a new RDP session
    */
   async createRDPSession(
@@ -266,7 +319,7 @@ export class RDPProtocol extends EventEmitter {
         metadata: {},
       };
 
-      this.sessions.set(sessionId, session);
+      this.rdpSessionDetails.set(sessionId, session);
 
       // Attempt to use node-rdpjs-2 first, fallback to native tools
       if (rdp && !options.customRDPFile) {
@@ -287,10 +340,10 @@ export class RDPProtocol extends EventEmitter {
       return session;
     } catch (error) {
       this.logger.error(`Failed to create RDP session ${sessionId}`, error);
-      const session = this.sessions.get(sessionId);
+      const session = this.rdpSessionDetails.get(sessionId);
       if (session) {
         session.status = 'failed';
-        this.sessions.set(sessionId, session);
+        this.rdpSessionDetails.set(sessionId, session);
       }
       this.emit('error', sessionId, error as Error);
       throw error;
@@ -312,11 +365,11 @@ export class RDPProtocol extends EventEmitter {
         // Setup event handlers
         client.on('connect', () => {
           this.logger.info(`RDP session ${sessionId} connected`);
-          const session = this.sessions.get(sessionId);
+          const session = this.rdpSessionDetails.get(sessionId);
           if (session) {
             session.status = 'connected';
             session.connectionTime = new Date();
-            this.sessions.set(sessionId, session);
+            this.rdpSessionDetails.set(sessionId, session);
           }
           resolve();
         });
@@ -414,11 +467,11 @@ export class RDPProtocol extends EventEmitter {
 
         childProcess.on('spawn', () => {
           this.logger.info(`RDP process spawned for session ${sessionId}`);
-          const session = this.sessions.get(sessionId);
+          const session = this.rdpSessionDetails.get(sessionId);
           if (session) {
             session.status = 'connected';
             session.connectionTime = new Date();
-            this.sessions.set(sessionId, session);
+            this.rdpSessionDetails.set(sessionId, session);
           }
           resolve();
         });
@@ -881,15 +934,15 @@ export class RDPProtocol extends EventEmitter {
   private handleSessionClose(sessionId: string, reason?: string): void {
     this.logger.info(`RDP session ${sessionId} closed`, { reason });
 
-    const session = this.sessions.get(sessionId);
+    const session = this.rdpSessionDetails.get(sessionId);
     if (session) {
       session.status = 'disconnected';
       session.lastActivity = new Date();
-      this.sessions.set(sessionId, session);
+      this.rdpSessionDetails.set(sessionId, session);
     }
 
     // Cleanup resources
-    this.cleanup(sessionId);
+    this.cleanupSession(sessionId);
 
     this.emit('disconnected', sessionId, reason);
   }
@@ -913,13 +966,13 @@ export class RDPProtocol extends EventEmitter {
     this.emit('output', output);
 
     // Update session stats
-    const session = this.sessions.get(sessionId);
+    const session = this.rdpSessionDetails.get(sessionId);
     if (session) {
       session.lastActivity = new Date();
       if (type === 'stdout') {
         session.bytesReceived += Buffer.byteLength(data);
       }
-      this.sessions.set(sessionId, session);
+      this.rdpSessionDetails.set(sessionId, session);
     }
   }
 
@@ -931,14 +984,14 @@ export class RDPProtocol extends EventEmitter {
       exitCode: code,
     });
 
-    const session = this.sessions.get(sessionId);
+    const session = this.rdpSessionDetails.get(sessionId);
     if (session) {
       session.status = code === 0 ? 'disconnected' : 'failed';
       session.lastActivity = new Date();
-      this.sessions.set(sessionId, session);
+      this.rdpSessionDetails.set(sessionId, session);
     }
 
-    this.cleanup(sessionId);
+    this.cleanupSession(sessionId);
     this.emit('disconnected', sessionId, `Process exited with code ${code}`);
   }
 
@@ -946,7 +999,7 @@ export class RDPProtocol extends EventEmitter {
    * Update performance metrics
    */
   private updatePerformanceMetrics(sessionId: string): void {
-    const session = this.sessions.get(sessionId);
+    const session = this.rdpSessionDetails.get(sessionId);
     if (!session || session.status !== 'connected') return;
 
     // Simulate performance metrics (in real implementation, gather from RDP client)
@@ -968,7 +1021,7 @@ export class RDPProtocol extends EventEmitter {
   /**
    * Send input to RDP session
    */
-  async sendRDPInput(sessionId: string, input: string): Promise<void> {
+  async sendInput(sessionId: string, input: string): Promise<void> {
     const connection = this.connections.get(sessionId);
     const fallbackProcess = this.fallbackProcesses.get(sessionId);
 
@@ -981,11 +1034,11 @@ export class RDPProtocol extends EventEmitter {
     }
 
     // Update session activity
-    const session = this.sessions.get(sessionId);
+    const session = this.rdpSessionDetails.get(sessionId);
     if (session) {
       session.lastActivity = new Date();
       session.bytesSent += Buffer.byteLength(input);
-      this.sessions.set(sessionId, session);
+      this.rdpSessionDetails.set(sessionId, session);
     }
   }
 
@@ -1075,17 +1128,17 @@ export class RDPProtocol extends EventEmitter {
   }
 
   /**
-   * Get session information
+   * Get RDP session information
    */
-  getSession(sessionId: string): RDPSession | undefined {
-    return this.sessions.get(sessionId);
+  getRDPSession(sessionId: string): RDPSession | undefined {
+    return this.rdpSessionDetails.get(sessionId);
   }
 
   /**
-   * Get all sessions
+   * Get all RDP session details
    */
-  getAllSessions(): RDPSession[] {
-    return Array.from(this.sessions.values());
+  getAllRDPSessions(): RDPSession[] {
+    return Array.from(this.rdpSessionDetails.values());
   }
 
   /**
@@ -1108,13 +1161,13 @@ export class RDPProtocol extends EventEmitter {
       fallbackProcess.kill('SIGTERM');
     }
 
-    this.cleanup(sessionId);
+    this.cleanupSession(sessionId);
   }
 
   /**
-   * Cleanup session resources
+   * Cleanup RDP-specific session resources
    */
-  private cleanup(sessionId: string): void {
+  private cleanupSession(sessionId: string): void {
     // Clear performance monitoring
     const monitor = this.performanceMonitors.get(sessionId);
     if (monitor) {
@@ -1137,6 +1190,9 @@ export class RDPProtocol extends EventEmitter {
     // Clear buffers
     this.clipboardBuffer.delete(sessionId);
     this.fileTransfers.delete(sessionId);
+
+    // Clear RDP session details
+    this.rdpSessionDetails.delete(sessionId);
   }
 
   /**
@@ -1170,40 +1226,6 @@ export class RDPProtocol extends EventEmitter {
     }
   }
 
-  // IProtocol required methods
-  async initialize(): Promise<void> {
-    // RDP initialization is handled in connect methods
-  }
-
-  async createSession(options: SessionOptions): Promise<ConsoleSession> {
-    const sessionId = `rdp-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
-
-    if (!options.rdpOptions) {
-      throw new Error('RDP options are required');
-    }
-
-    // Create the actual RDP session
-    await this.createRDPSession(sessionId, options.rdpOptions);
-
-    const session: ConsoleSession = {
-      id: sessionId,
-      command: options.command || '',
-      args: options.args || [],
-      cwd: '/',
-      env: options.environment || {},
-      createdAt: new Date(),
-      status: 'running',
-      type: 'rdp',
-      streaming: options.streaming ?? true,
-      rdpOptions: options.rdpOptions,
-      executionState: 'idle',
-      activeCommands: new Map(),
-    };
-
-    this.emit('sessionCreated', session);
-    return session;
-  }
-
   async executeCommand(
     sessionId: string,
     command: string,
@@ -1218,54 +1240,28 @@ export class RDPProtocol extends EventEmitter {
     });
   }
 
-  async sendInput(sessionId: string, input: string): Promise<void> {
-    await this.sendRDPInput(sessionId, input);
-  }
-
-  async getOutput(sessionId: string, since?: Date): Promise<string> {
-    // RDP output is screen updates, not text
-    return 'RDP screen output (binary data)';
-  }
-
   async closeSession(sessionId: string): Promise<void> {
     await this.disconnectSession(sessionId);
-  }
-
-  async getHealthStatus(): Promise<ProtocolHealthStatus> {
-    this.healthStatus.lastChecked = new Date();
-    this.healthStatus.metrics.activeSessions = this.sessions.size;
-    this.healthStatus.isHealthy = this.healthStatus.errors.length === 0;
-
-    return { ...this.healthStatus };
+    this.sessions.delete(sessionId);
   }
 
   async dispose(): Promise<void> {
-    await this.destroy();
-  }
+    this.logger.info('Disposing RDP Protocol');
 
-  /**
-   * Destroy protocol and cleanup all resources
-   */
-  async destroy(): Promise<void> {
-    this.logger.info('Destroying RDP Protocol');
+    // Clear all performance monitors
+    this.performanceMonitors.forEach((monitor) => clearInterval(monitor));
+    this.performanceMonitors.clear();
 
-    // Disconnect all sessions
-    const sessionIds = Array.from(this.sessions.keys());
-    await Promise.all(sessionIds.map((id) => this.disconnectSession(id)));
-
-    // Clear all data structures
-    this.sessions.clear();
+    // Clear RDP-specific state
+    this.rdpSessionDetails.clear();
     this.connections.clear();
     this.fallbackProcesses.clear();
     this.sessionRecordings.clear();
     this.clipboardBuffer.clear();
     this.fileTransfers.clear();
 
-    // Clear all intervals
-    this.performanceMonitors.forEach((monitor) => clearInterval(monitor));
-    this.performanceMonitors.clear();
-
-    this.removeAllListeners();
+    // Call BaseProtocol cleanup (closes sessions, clears sessions map, outputBuffers, listeners)
+    await this.cleanup();
   }
 }
 
