@@ -26,7 +26,6 @@ import {
   SessionOptions,
 } from '../types/index.js';
 import { BaseProtocol } from '../core/BaseProtocol.js';
-import { ProtocolNotSupportedError } from '../core/ProtocolNotSupportedError.js';
 import { ProtocolCapabilities, SessionState } from '../core/IProtocol.js';
 
 export class WebSocketTerminalProtocol extends BaseProtocol {
