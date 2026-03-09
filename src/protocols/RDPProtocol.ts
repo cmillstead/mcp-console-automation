@@ -24,10 +24,9 @@ import {
   ConsoleSession,
 } from '../types/index.js';
 import {
-  IProtocol,
   ProtocolCapabilities,
   ProtocolHealthStatus,
-} from '../core/ProtocolFactory.js';
+} from '../core/IProtocol.js';
 import { Logger } from '../utils/logger.js';
 
 // Import node-rdpjs-2 dynamically to handle potential missing dependency
@@ -103,7 +102,7 @@ export interface RDPGatewayConfig {
   enableAuth: boolean;
 }
 
-export class RDPProtocol extends EventEmitter implements IProtocol {
+export class RDPProtocol extends EventEmitter {
   public readonly type = 'rdp' as const;
   public readonly capabilities: ProtocolCapabilities;
   public readonly healthStatus: ProtocolHealthStatus;

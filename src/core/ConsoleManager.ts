@@ -393,6 +393,7 @@ export class ConsoleManager extends EventEmitter {
   private continuityConfig: SessionContinuityConfig;
   private persistenceTimer: NodeJS.Timeout | null = null;
   private bookmarkTimers: Map<string, NodeJS.Timeout> = new Map();
+  private networkMonitoringTimer: NodeJS.Timeout | null = null;
 
   // Network performance and adaptive timeout management
   private networkMetrics: Map<string, NetworkMetrics> = new Map(); // host -> metrics
@@ -7553,7 +7554,7 @@ export class ConsoleManager extends EventEmitter {
     // Monitor all known hosts every 5 minutes
     const monitoringInterval = 5 * 60 * 1000; // 5 minutes
 
-    setInterval(async () => {
+    this.networkMonitoringTimer = setInterval(async () => {
       const hosts = Array.from(
         new Set([
           ...Array.from(this.networkMetrics.keys()),
@@ -10328,7 +10329,33 @@ export class ConsoleManager extends EventEmitter {
   async destroy() {
     if (this.resourceMonitor) {
       clearInterval(this.resourceMonitor);
+      this.resourceMonitor = null;
     }
+
+    // Clean up network monitoring timer
+    if (this.networkMonitoringTimer) {
+      clearInterval(this.networkMonitoringTimer);
+      this.networkMonitoringTimer = null;
+    }
+
+    // Clean up session health check intervals
+    for (const [, timer] of this.sessionHealthCheckIntervals) {
+      clearInterval(timer);
+    }
+    this.sessionHealthCheckIntervals.clear();
+
+    // Clean up IPMI monitoring intervals
+    for (const [, timers] of this.ipmiMonitoringIntervals) {
+      if (Array.isArray(timers)) {
+        for (const timer of timers) {
+          clearInterval(timer);
+        }
+      } else {
+        clearInterval(timers);
+      }
+    }
+    this.ipmiMonitoringIntervals.clear();
+
     await this.stopAllSessions();
 
     // Close all SSH connections in the pool
@@ -10393,6 +10420,9 @@ export class ConsoleManager extends EventEmitter {
       this.clearCommandQueue(sessionId);
     });
     this.commandQueues.clear();
+    for (const [, timer] of this.commandProcessingIntervals) {
+      clearTimeout(timer);
+    }
     this.commandProcessingIntervals.clear();
 
     this.logger.info('Enhanced session persistence system shutdown complete');

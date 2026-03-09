@@ -33,75 +33,17 @@ import {
   WSLConnectionOptions,
 } from '../types/index.js';
 
-// Protocol interfaces
-export interface IProtocol extends EventEmitter {
-  readonly type: ConsoleType;
-  readonly capabilities: ProtocolCapabilities;
-  readonly healthStatus: ProtocolHealthStatus;
-
-  initialize(): Promise<void>;
-  createSession(options: SessionOptions): Promise<ConsoleSession>;
-  executeCommand(
-    sessionId: string,
-    command: string,
-    args?: string[]
-  ): Promise<void>;
-  sendInput(sessionId: string, input: string): Promise<void>;
-  getOutput(sessionId: string, since?: Date): Promise<string>;
-  closeSession(sessionId: string): Promise<void>;
-  getHealthStatus(): Promise<ProtocolHealthStatus>;
-  dispose(): Promise<void>;
-}
-
-export interface ProtocolCapabilities {
-  supportsStreaming: boolean;
-  supportsFileTransfer: boolean;
-  supportsX11Forwarding: boolean;
-  supportsPortForwarding: boolean;
-  supportsAuthentication: boolean;
-  supportsEncryption: boolean;
-  supportsCompression: boolean;
-  supportsMultiplexing: boolean;
-  supportsKeepAlive: boolean;
-  supportsReconnection: boolean;
-  supportsBinaryData: boolean;
-  supportsCustomEnvironment: boolean;
-  supportsWorkingDirectory: boolean;
-  supportsSignals: boolean;
-  supportsResizing: boolean;
-  supportsPTY: boolean;
-  maxConcurrentSessions: number;
-  defaultTimeout: number;
-  supportedEncodings: string[];
-  supportedAuthMethods: string[];
-  platformSupport: {
-    windows: boolean;
-    linux: boolean;
-    macos: boolean;
-    freebsd: boolean;
-  };
-}
-
-export interface ProtocolHealthStatus {
-  isHealthy: boolean;
-  lastChecked: Date;
-  errors: string[];
-  warnings: string[];
-  metrics: {
-    activeSessions: number;
-    totalSessions: number;
-    averageLatency: number;
-    successRate: number;
-    uptime: number;
-  };
-  dependencies: {
-    [key: string]: {
-      available: boolean;
-      version?: string;
-      error?: string;
-    };
-  };
-}
+// Re-export protocol interfaces from canonical source
+export {
+  IProtocol,
+  ProtocolCapabilities,
+  ProtocolHealthStatus,
+} from './IProtocol.js';
+import type {
+  IProtocol,
+  ProtocolCapabilities,
+  ProtocolHealthStatus,
+} from './IProtocol.js';
 
 export interface ProtocolConfig {
   enabled: boolean;

@@ -28,9 +28,11 @@ import { SnapshotManager } from '../testing/SnapshotManager.js';
 import { SnapshotDiffer } from '../testing/SnapshotDiffer.js';
 import { Assertion, SessionSnapshot } from '../types/test-framework.js';
 
-// Debug logging to file
-const DEBUG_LOG_FILE = path.join(process.cwd(), 'mcp-debug.log');
+// Debug logging to file (only when MCP_DEBUG env var is set)
+const DEBUG_ENABLED = !!process.env.MCP_DEBUG;
+const DEBUG_LOG_FILE = DEBUG_ENABLED ? path.join(process.cwd(), 'mcp-debug.log') : '';
 function debugLog(...args: any[]) {
+  if (!DEBUG_ENABLED) return;
   const timestamp = new Date().toISOString();
   const message = `[${timestamp}] ${args.map((a) => (typeof a === 'object' ? JSON.stringify(a, null, 2) : String(a))).join(' ')}\n`;
   fs.appendFileSync(DEBUG_LOG_FILE, message, 'utf8');
