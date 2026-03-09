@@ -261,7 +261,7 @@ export interface ConsoleSession {
   currentCommandId?: string;
   lastCommandCompletedAt?: Date;
   activeCommands: Map<string, CommandExecution>;
-  metadata?: any;
+  metadata?: Record<string, unknown>;
 }
 
 export interface ConsoleOutput {
@@ -1035,7 +1035,7 @@ export interface VNCRectangle {
 export interface VNCFramebuffer {
   width: number;
   height: number;
-  pixelFormat: any;
+  pixelFormat: unknown;
   data: Buffer;
   lastUpdate: Date;
   encoding: VNCEncoding[];
@@ -1381,7 +1381,7 @@ export interface KubernetesSessionState {
     stdin?: any;
     stdout?: any;
     stderr?: any;
-    status?: any;
+    status?: unknown;
   };
 }
 
@@ -1696,7 +1696,7 @@ export interface GCPConnectionOptions {
   projectId?: string;
   keyFilename?: string; // Path to service account key file
   keyFile?: string; // Service account key JSON content
-  credentials?: any; // Service account credentials object
+  credentials?: Record<string, unknown>; // Service account credentials object
   clientEmail?: string;
   privateKey?: string;
   scopes?: string[];
@@ -2265,7 +2265,7 @@ export interface DashboardFilter {
   name: string;
   type: 'select' | 'multiselect' | 'daterange' | 'text';
   options?: string[];
-  defaultValue?: any;
+  defaultValue?: unknown;
 }
 
 export interface TraceSpan {
@@ -2320,7 +2320,7 @@ export interface HealthCheckResult {
     string,
     {
       checkStatus: 'pass' | 'fail' | 'warn';
-      value?: any;
+      value?: unknown;
       message?: string;
       duration?: number;
     }
@@ -2516,7 +2516,7 @@ export interface DockerContainerInfo {
     networks: Record<
       string,
       {
-        ipamConfig?: any;
+        ipamConfig?: unknown;
         links?: string[];
         aliases?: string[];
         networkId: string;
@@ -3484,7 +3484,7 @@ export interface IPCSessionState {
 
   // Protocol-specific state
   namedPipeState?: {
-    pipeHandle?: any; // Windows HANDLE
+    pipeHandle?: unknown; // Windows HANDLE
     serverMode: boolean;
     clientCount: number;
     instanceId: number;
@@ -3499,7 +3499,7 @@ export interface IPCSessionState {
 
   dockerSocketState?: {
     apiVersion: string;
-    serverInfo?: any;
+    serverInfo?: unknown;
     containers?: string[];
   };
 
@@ -3513,7 +3513,7 @@ export interface IPCSessionState {
   comState?: {
     progId?: string;
     clsid?: string;
-    interfacePointer?: any; // COM interface pointer
+    interfacePointer?: unknown; // COM interface pointer
     threadingModel: string;
   };
 }
@@ -3525,7 +3525,7 @@ export interface IPCMessage {
   sessionId?: string;
 
   // Message content
-  payload: any;
+  payload: unknown;
   encoding?: 'utf8' | 'binary' | 'base64';
   compressed?: boolean;
   encrypted?: boolean;
@@ -3548,7 +3548,7 @@ export interface IPCMessage {
   error?: {
     code: number;
     message: string;
-    details?: any;
+    details?: unknown;
   };
 }
 
@@ -3634,7 +3634,7 @@ export interface WinRMSessionState {
   lastActivity?: Date;
   shells?: Map<any, any>;
   activeCommands?: Map<any, any>;
-  transferredFiles?: any[];
+  transferredFiles?: unknown[];
   performanceCounters?: {
     commandsExecuted: number;
     bytesTransferred: number;
@@ -4137,7 +4137,7 @@ export interface AWSSSMDocument {
     [key: string]: {
       type: 'String' | 'StringList' | 'Integer' | 'Boolean' | 'MapStringString';
       description?: string;
-      defaultValue?: any;
+      defaultValue?: unknown;
       allowedValues?: string[];
       allowedPattern?: string;
       maxChars?: number;
@@ -5062,7 +5062,7 @@ export interface WebSocketTerminalMessage {
   sessionId?: string;
   timestamp: Date;
   sequenceNumber?: number;
-  data?: any;
+  data?: unknown;
   encoding?: 'utf8' | 'binary' | 'base64';
   compressed?: boolean;
   fragment?: {
@@ -5380,7 +5380,7 @@ export interface AnsibleExecutionResult {
   task: string;
   action: string;
   status: 'ok' | 'changed' | 'failed' | 'skipped' | 'unreachable';
-  result?: any;
+  result?: unknown;
   msg?: string;
   changed?: boolean;
   failed?: boolean;
@@ -5743,7 +5743,7 @@ export interface JobEvent {
     | 'cancelled'
     | 'timeout';
   timestamp: Date;
-  data?: any;
+  data?: unknown;
   sessionId?: string;
 }
 
@@ -5795,13 +5795,13 @@ export interface JobOutputResponse {
 export interface BatchJobOperation {
   operation: 'start' | 'cancel' | 'status' | 'output';
   jobIds: string[];
-  options?: any;
+  options?: Record<string, unknown>;
 }
 
 export interface BatchJobResult {
   jobId: string;
   success: boolean;
-  result?: any;
+  result?: unknown;
   error?: string;
 }
 
