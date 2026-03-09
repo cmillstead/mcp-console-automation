@@ -15,6 +15,7 @@ import {
   ExtendedErrorPattern,
   CommandExecution,
   AzureConnectionOptions,
+  AzureTokenInfo,
   SerialConnectionOptions,
   WSLConnectionOptions,
   WSLSession,
@@ -3982,7 +3983,7 @@ export class ConsoleManager extends EventEmitter implements CommandQueueHost {
         ...session,
         kubernetesState: kubernetesState,
         status: 'running' as const,
-        pid: undefined, // Kubernetes sessions don't have local PIDs
+        pid: undefined as number | undefined, // Kubernetes sessions don't have local PIDs
       };
       this.sessions.set(sessionId, updatedSession);
       this.outputBuffers.set(sessionId, []);
@@ -4342,7 +4343,7 @@ export class ConsoleManager extends EventEmitter implements CommandQueueHost {
     // Handle session events
     this.kubernetesProtocol.on(
       'sessionCreated',
-      ({ sessionId: k8sSessionId, sessionState }) => {
+      ({ sessionId: k8sSessionId, sessionState }: { sessionId: string; sessionState: string }) => {
         if (k8sSessionId === sessionId) {
           this.logger.debug(`Kubernetes exec session ${sessionId} established`);
         }
@@ -4351,7 +4352,7 @@ export class ConsoleManager extends EventEmitter implements CommandQueueHost {
 
     this.kubernetesProtocol.on(
       'sessionClosed',
-      ({ sessionId: k8sSessionId }) => {
+      ({ sessionId: k8sSessionId }: { sessionId: string }) => {
         if (k8sSessionId === sessionId) {
           this.handleKubernetesSessionClosed(sessionId);
         }
@@ -4367,20 +4368,20 @@ export class ConsoleManager extends EventEmitter implements CommandQueueHost {
 
     this.kubernetesProtocol.on(
       'logData',
-      ({ streamId, podName, data, raw }) => {
+      ({ streamId, podName, data, raw }: { streamId: string; podName: string; data: string; raw: string }) => {
         if (streamId === sessionId) {
           this.handleKubernetesLogData(sessionId, data, raw);
         }
       }
     );
 
-    this.kubernetesProtocol.on('logError', ({ streamId, error }) => {
+    this.kubernetesProtocol.on('logError', ({ streamId, error }: { streamId: string; error: Error }) => {
       if (streamId === sessionId) {
         this.handleKubernetesLogError(sessionId, error);
       }
     });
 
-    this.kubernetesProtocol.on('logEnd', ({ streamId }) => {
+    this.kubernetesProtocol.on('logEnd', ({ streamId }: { streamId: string }) => {
       if (streamId === sessionId) {
         this.handleKubernetesLogEnd(sessionId);
       }
@@ -4395,7 +4396,7 @@ export class ConsoleManager extends EventEmitter implements CommandQueueHost {
 
     this.kubernetesProtocol.on(
       'portForwardStarted',
-      ({ portForwardId, localPort, remotePort }) => {
+      ({ portForwardId, localPort, remotePort }: { portForwardId: string; localPort: number; remotePort: number }) => {
         if (portForwardId === sessionId) {
           this.logger.info(
             `Port forward ${sessionId} started: ${localPort} -> ${remotePort}`
@@ -4404,7 +4405,7 @@ export class ConsoleManager extends EventEmitter implements CommandQueueHost {
       }
     );
 
-    this.kubernetesProtocol.on('portForwardStopped', ({ portForwardId }) => {
+    this.kubernetesProtocol.on('portForwardStopped', ({ portForwardId }: { portForwardId: string }) => {
       if (portForwardId === sessionId) {
         this.handleKubernetesPortForwardStopped(sessionId);
       }
@@ -4563,7 +4564,7 @@ export class ConsoleManager extends EventEmitter implements CommandQueueHost {
         // Auto-detect serial port if only console type is specified
         const devices = await this.serialProtocol.discoverDevices();
         const availableDevice = devices.find(
-          (device) => device.isConnected === false
+          (device: { isConnected: boolean }) => device.isConnected === false
         );
 
         if (!availableDevice) {
@@ -7128,7 +7129,7 @@ export class ConsoleManager extends EventEmitter implements CommandQueueHost {
     const buffer = this.outputBuffers.get(sessionId) || [];
     return limit ? buffer.slice(-limit) : buffer;
   }
-  n; /**
+  /**
    * Get paginated output with continuation token support
    * @param request - Pagination request parameters
    * @returns Paginated response with metadata
@@ -9551,21 +9552,21 @@ export class ConsoleManager extends EventEmitter implements CommandQueueHost {
    * Setup Azure protocol integration
    */
   private setupAzureIntegration(): void {
-    this.azureProtocol.on('connected', (sessionId) => {
+    this.azureProtocol.on('connected', (sessionId: string) => {
       this.logger.info(`Azure session connected: ${sessionId}`);
       this.emit('azure-connected', { sessionId });
       // Record successful connection for monitoring
       this.azureMonitoring.recordConnectionEvent(sessionId, 'success');
     });
 
-    this.azureProtocol.on('disconnected', (sessionId) => {
+    this.azureProtocol.on('disconnected', (sessionId: string) => {
       this.logger.info(`Azure session disconnected: ${sessionId}`);
       this.emit('azure-disconnected', { sessionId });
       // Unregister from monitoring
       this.azureMonitoring.unregisterSession(sessionId);
     });
 
-    this.azureProtocol.on('error', (sessionId, error) => {
+    this.azureProtocol.on('error', (sessionId: string, error: Error) => {
       this.logger.error(`Azure session error: ${sessionId}`, error);
       this.emit('azure-error', { sessionId, error });
 
@@ -9582,7 +9583,7 @@ export class ConsoleManager extends EventEmitter implements CommandQueueHost {
       this.azureMonitoring.recordConnectionEvent(sessionId, 'failure');
     });
 
-    this.azureProtocol.on('output', (sessionId, output) => {
+    this.azureProtocol.on('output', (sessionId: string, output: ConsoleOutput) => {
       // Forward Azure output to the console system
       const outputBuffer = this.outputBuffers.get(sessionId) || [];
       outputBuffer.push(output);
@@ -9600,7 +9601,7 @@ export class ConsoleManager extends EventEmitter implements CommandQueueHost {
       });
     });
 
-    this.azureProtocol.on('token-refreshed', (sessionId, tokenInfo) => {
+    this.azureProtocol.on('token-refreshed', (sessionId: string, tokenInfo: AzureTokenInfo) => {
       this.logger.debug(`Azure token refreshed for session: ${sessionId}`);
       this.emit('azure-token-refreshed', { sessionId, tokenInfo });
       // Record token refresh for monitoring
@@ -9610,12 +9611,12 @@ export class ConsoleManager extends EventEmitter implements CommandQueueHost {
       );
     });
 
-    this.azureProtocol.on('session-ready', (sessionId) => {
+    this.azureProtocol.on('session-ready', (sessionId: string) => {
       this.logger.info(`Azure session ready: ${sessionId}`);
       this.emit('azure-session-ready', { sessionId });
     });
 
-    this.azureProtocol.on('reconnecting', (sessionId, attempt) => {
+    this.azureProtocol.on('reconnecting', (sessionId: string, attempt: number) => {
       this.logger.info(
         `Azure session reconnecting: ${sessionId} (attempt ${attempt})`
       );
@@ -10574,7 +10575,8 @@ export class ConsoleManager extends EventEmitter implements CommandQueueHost {
    */
   private setupVNCEventHandlers(sessionId: string, vncProtocol: any): void {
     // Handle framebuffer updates
-    vncProtocol.on('framebuffer-update', (update) => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    vncProtocol.on('framebuffer-update', (update: any) => {
       const framebuffer = this.vncFramebuffers.get(sessionId);
       if (framebuffer) {
         framebuffer.data = update.data;
@@ -10596,7 +10598,8 @@ export class ConsoleManager extends EventEmitter implements CommandQueueHost {
     });
 
     // Handle VNC server messages
-    vncProtocol.on('server-message', (message) => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    vncProtocol.on('server-message', (message: any) => {
       const output: ConsoleOutput = {
         sessionId,
         type: 'stdout',
@@ -10613,7 +10616,7 @@ export class ConsoleManager extends EventEmitter implements CommandQueueHost {
     });
 
     // Handle clipboard updates
-    vncProtocol.on('clipboard-update', (clipboardData) => {
+    vncProtocol.on('clipboard-update', (clipboardData: string) => {
       this.emitEvent({
         sessionId,
         type: 'vnc-clipboard-update',
@@ -10623,7 +10626,7 @@ export class ConsoleManager extends EventEmitter implements CommandQueueHost {
     });
 
     // Handle connection errors
-    vncProtocol.on('error', (error) => {
+    vncProtocol.on('error', (error: Error) => {
       this.logger.error(`VNC session ${sessionId} error:`, error);
       this.handleSessionError(sessionId, error, 'vnc-connection');
     });
@@ -10741,17 +10744,17 @@ export class ConsoleManager extends EventEmitter implements CommandQueueHost {
    * Setup SFTP event handlers
    */
   private setupSFTPEventHandlers(sessionId: string, sftpProtocol: any): void {
-    sftpProtocol.on('connected', (connectionState) => {
+    sftpProtocol.on('connected', (connectionState: string) => {
       this.logger.info(`SFTP session ${sessionId} connected`);
       this.emit('sftp-connected', { sessionId, connectionState });
     });
 
-    sftpProtocol.on('transfer-progress', (progress) => {
+    sftpProtocol.on('transfer-progress', (progress: Record<string, unknown>) => {
       this.updateTransferSessionStats(sessionId, progress);
       this.emit('sftp-transfer-progress', { sessionId, progress });
     });
 
-    sftpProtocol.on('error', (error) => {
+    sftpProtocol.on('error', (error: Error) => {
       this.logger.error(`SFTP session ${sessionId} error:`, error);
       this.emit('sftp-error', { sessionId, error });
     });
