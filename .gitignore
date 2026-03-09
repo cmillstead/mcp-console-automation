@@ -66,6 +66,7 @@ desktop.ini
 
 # Git worktrees (cause CI build failures)
 worktrees/
+.worktrees/
 
 # Prevent clutter - NO investigation/report/analysis files
 *-FINDINGS.md
