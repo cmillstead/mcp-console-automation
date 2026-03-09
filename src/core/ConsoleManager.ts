@@ -81,67 +81,21 @@ import { DockerProtocol } from '../protocols/DockerProtocol.js';
 import { NetworkMetricsManager } from './NetworkMetricsManager.js';
 import {
   SessionPersistenceManager,
-  SessionPersistentData,
-  SerializedQueuedCommand,
-  SessionBookmark,
-  SessionContinuityConfig,
   SessionDataProvider,
 } from './SessionPersistenceManager.js';
+import {
+  CommandQueueManager,
+  CommandQueueHost,
+  QueuedCommand,
+  TimeoutRecoveryResult,
+  CommandQueueConfig,
+} from './CommandQueueManager.js';
 // JobManager functionality integrated into SessionManager
 import PQueue from 'p-queue';
 import { platform } from 'os';
 import { readFileSync } from 'fs';
 
-// Command queue types for SSH buffering fix
-interface QueuedCommand {
-  id: string;
-  sessionId: string;
-  input: string;
-  timestamp: Date;
-  retryCount: number;
-  resolve: (value?: any) => void;
-  reject: (error: Error) => void;
-  acknowledged: boolean;
-  sent: boolean;
-  priority?: number;
-  context?: any;
-}
-
-// Recovery result interface
-interface TimeoutRecoveryResult {
-  success: boolean;
-  error?: string;
-  reconnected?: boolean;
-  restoredCommands?: number;
-  metadata?: Record<string, any>;
-}
-
-interface SessionCommandQueue {
-  sessionId: string;
-  commands: QueuedCommand[];
-  isProcessing: boolean;
-  lastCommandTime: number;
-  acknowledgmentTimeout: NodeJS.Timeout | null;
-  outputBuffer: string;
-  expectedPrompt?: RegExp;
-  persistentData?: SessionPersistentData;
-  bookmarks: SessionBookmark[];
-}
-
-// SessionPersistentData, SerializedQueuedCommand, SessionBookmark, SessionContinuityConfig
-// are imported from SessionPersistenceManager.ts
-
-interface CommandQueueConfig {
-  maxQueueSize: number;
-  commandTimeout: number;
-  interCommandDelay: number;
-  acknowledgmentTimeout: number;
-  enablePromptDetection: boolean;
-  defaultPromptPattern: RegExp;
-}
-
-
-export class ConsoleManager extends EventEmitter {
+export class ConsoleManager extends EventEmitter implements CommandQueueHost {
   private sessions: Map<string, ConsoleSession>;
   private processes: Map<string, ChildProcess>;
   private sshClients: Map<string, SSHClient>;
@@ -166,16 +120,7 @@ export class ConsoleManager extends EventEmitter {
   private sessionHealthCheckIntervals: Map<string, NodeJS.Timeout>;
   private configManager: ConfigManager;
 
-  // Command execution tracking and buffer isolation
-  private commandExecutions: Map<string, CommandExecution>; // commandId -> CommandExecution
-  private sessionCommandQueue: Map<string, string[]>; // sessionId -> commandIds[]
-  private outputSequenceCounters: Map<string, number>; // sessionId -> counter
-  private promptPatterns: Map<string, RegExp>; // sessionId -> prompt pattern
-
-  // Command queue system for SSH buffering fix
-  private commandQueues: Map<string, SessionCommandQueue>;
-  private queueConfig: CommandQueueConfig;
-  private commandProcessingIntervals: Map<string, NodeJS.Timeout>;
+  private commandQueueManager!: CommandQueueManager;
 
   // New production-ready connection pooling and session management
   private connectionPool: ConnectionPool;
@@ -370,25 +315,8 @@ export class ConsoleManager extends EventEmitter {
     this.retryAttempts = new Map();
     this.configManager = ConfigManager.getInstance();
 
-    // Initialize command execution tracking
-    this.commandExecutions = new Map();
-    this.sessionCommandQueue = new Map();
-    this.outputSequenceCounters = new Map();
-    this.promptPatterns = new Map();
     this.retryManager = new RetryManager();
     this.errorRecovery = new ErrorRecovery();
-
-    // Initialize command queue system
-    this.commandQueues = new Map();
-    this.commandProcessingIntervals = new Map();
-    this.queueConfig = {
-      maxQueueSize: 100,
-      commandTimeout: 30000,
-      interCommandDelay: 500,
-      acknowledgmentTimeout: 10000,
-      enablePromptDetection: true,
-      defaultPromptPattern: /[$#%>]\s*$/m,
-    };
 
     // Initialize network metrics manager
     this.networkMetricsManager = new NetworkMetricsManager(this.logger);
@@ -494,6 +422,14 @@ export class ConsoleManager extends EventEmitter {
 
     // Initialize session persistence manager
     this.persistenceManager = new SessionPersistenceManager(this.logger);
+
+    this.commandQueueManager = new CommandQueueManager(
+      this.logger,
+      this,
+      this.networkMetricsManager,
+      this.persistenceManager,
+      this.errorRecovery
+    );
 
     // Setup event listeners for integration
     this.setupPoolingIntegration();
@@ -683,71 +619,30 @@ export class ConsoleManager extends EventEmitter {
     sessionId: string,
     options: SessionOptions
   ): void {
-    this.sessionCommandQueue.set(sessionId, []);
-    this.outputSequenceCounters.set(sessionId, 0);
-
-    // Set up prompt pattern for command completion detection
-    let promptPattern: RegExp;
-    if (
-      options.consoleType === 'powershell' ||
-      options.consoleType === 'pwsh'
-    ) {
-      promptPattern = /PS\s.*?>\s*$/m;
-    } else if (options.consoleType === 'cmd') {
-      promptPattern = /^[A-Z]:\\.*?>\s*$/m;
-    } else if (
-      options.consoleType === 'bash' ||
-      options.consoleType === 'zsh' ||
-      options.consoleType === 'sh'
-    ) {
-      promptPattern = /^[\w\-\.~]*[$#]\s*$/m;
-    } else {
-      // Generic prompt pattern
-      promptPattern = /^.*?[$#>]\s*$/m;
-    }
-
-    this.promptPatterns.set(sessionId, promptPattern);
-
-    // Initialize persistent session data
-    this.persistenceManager.initializeSessionPersistence(sessionId, options);
+    this.commandQueueManager.initializeSessionCommandTracking(
+      sessionId,
+      options.consoleType || '',
+      options.sshOptions
+    );
   }
 
-  /**
-   * Create a session bookmark, delegating to persistence manager with command queue data
-   */
   private async createSessionBookmark(
     sessionId: string,
     trigger: string
   ): Promise<void> {
-    const queue = this.commandQueues.get(sessionId);
-    const snapshot = queue ? this.serializeCommandQueue(queue.commands) : undefined;
-    const queueLength = queue ? queue.commands.length : 0;
-
-    await this.persistenceManager.createSessionBookmark(sessionId, trigger, snapshot, queueLength);
-
-    // Update queue bookmarks reference
-    if (queue) {
-      queue.bookmarks = this.persistenceManager.getBookmarks(sessionId);
-    }
+    await this.commandQueueManager.createSessionBookmark(sessionId, trigger);
   }
 
-  /**
-   * Create a session data provider for the persistence manager
-   */
   private createSessionDataProvider(): SessionDataProvider {
     return {
       getCommandQueueSnapshot: (sessionId: string) => {
-        const queue = this.commandQueues.get(sessionId);
-        if (queue) {
-          return this.serializeCommandQueue(queue.commands);
-        }
-        return undefined;
+        return this.commandQueueManager.getCommandQueueSnapshot(sessionId);
       },
       getOutputHistory: (sessionId: string) => {
         const outputBuffer = this.outputBuffers.get(sessionId);
         if (outputBuffer) {
           return outputBuffer
-            .slice(-100) // Keep last 100 outputs
+            .slice(-100)
             .map((output) => output.data);
         }
         return undefined;
@@ -755,187 +650,6 @@ export class ConsoleManager extends EventEmitter {
     };
   }
 
-  /**
-   * Serialize command queue for persistence
-   */
-  private serializeCommandQueue(
-    commands: QueuedCommand[]
-  ): SerializedQueuedCommand[] {
-    return commands.map((cmd) => ({
-      id: cmd.id,
-      sessionId: cmd.sessionId,
-      input: cmd.input,
-      timestamp: cmd.timestamp.toISOString(),
-      retryCount: cmd.retryCount,
-      acknowledged: cmd.acknowledged,
-      sent: cmd.sent,
-      priority: cmd.priority,
-      context: cmd.context,
-    }));
-  }
-
-  /**
-   * Deserialize command queue from persistence
-   */
-  private deserializeCommandQueue(
-    serialized: SerializedQueuedCommand[],
-    sessionId: string
-  ): QueuedCommand[] {
-    return serialized.map((cmd) => ({
-      id: cmd.id,
-      sessionId: cmd.sessionId,
-      input: cmd.input,
-      timestamp: new Date(cmd.timestamp),
-      retryCount: cmd.retryCount,
-      acknowledged: cmd.acknowledged,
-      sent: cmd.sent,
-      priority: cmd.priority,
-      context: cmd.context,
-      resolve: () => {}, // Will be replaced during recovery
-      reject: () => {}, // Will be replaced during recovery
-    }));
-  }
-
-  /**
-   * Start a new command execution in a session
-   */
-  private startCommandExecution(
-    sessionId: string,
-    command: string,
-    args?: string[]
-  ): string {
-    const commandId = uuidv4();
-    const session = this.sessions.get(sessionId);
-    if (!session) {
-      throw new Error(`Session ${sessionId} not found`);
-    }
-
-    // Update session state
-    session.executionState = 'executing';
-    session.currentCommandId = commandId;
-    this.sessions.set(sessionId, session);
-
-    // Create command execution record
-    const commandExecution: CommandExecution = {
-      id: commandId,
-      sessionId,
-      command,
-      args,
-      startedAt: new Date(),
-      status: 'executing',
-      output: [],
-      isolatedBufferStartIndex: this.outputBuffers.get(sessionId)?.length || 0,
-      totalOutputLines: 0,
-      markers: {
-        promptPattern: this.promptPatterns.get(sessionId),
-      },
-    };
-
-    // Store command execution
-    this.commandExecutions.set(commandId, commandExecution);
-    session.activeCommands.set(commandId, commandExecution);
-
-    // Add to session command queue
-    const queue = this.sessionCommandQueue.get(sessionId) || [];
-    queue.push(commandId);
-    this.sessionCommandQueue.set(sessionId, queue);
-
-    this.logger.debug(
-      `Started command execution ${commandId} for session ${sessionId}: ${command}`
-    );
-    return commandId;
-  }
-
-  /**
-   * Complete a command execution
-   */
-  private completeCommandExecution(commandId: string, exitCode?: number): void {
-    const commandExecution = this.commandExecutions.get(commandId);
-    if (!commandExecution) {
-      this.logger.warn(`Command execution ${commandId} not found`);
-      return;
-    }
-
-    const session = this.sessions.get(commandExecution.sessionId);
-    if (!session) {
-      this.logger.warn(
-        `Session ${commandExecution.sessionId} not found for command ${commandId}`
-      );
-      return;
-    }
-
-    // Update command execution
-    commandExecution.completedAt = new Date();
-    commandExecution.status =
-      exitCode === 0
-        ? 'completed'
-        : exitCode !== undefined
-          ? 'failed'
-          : 'completed';
-    commandExecution.exitCode = exitCode;
-    commandExecution.duration =
-      commandExecution.completedAt.getTime() -
-      commandExecution.startedAt.getTime();
-
-    // Update session state
-    session.executionState = 'idle';
-    session.currentCommandId = undefined;
-    session.lastCommandCompletedAt = commandExecution.completedAt;
-
-    // Clean up from active commands (keep in session for history but not as active)
-    session.activeCommands.delete(commandId);
-    this.sessions.set(commandExecution.sessionId, session);
-
-    // Record command metrics for health monitoring
-    if (this.selfHealingEnabled && this.metricsCollector) {
-      this.metricsCollector.recordCommandExecution(
-        commandExecution.status === 'completed',
-        commandExecution.duration || 0,
-        commandExecution.command,
-        commandExecution.sessionId
-      );
-
-      // Update heartbeat with successful command execution
-      // Note: HeartbeatMonitor doesn't have recordSuccessfulOperation method
-      // if (commandExecution.status === 'completed') {
-      //   this.heartbeatMonitor.recordSuccessfulOperation(commandExecution.sessionId);
-      // }
-    }
-
-    this.logger.debug(
-      `Completed command execution ${commandId} with status ${commandExecution.status} in ${commandExecution.duration}ms`
-    );
-  }
-
-  /**
-   * Get isolated output for a specific command
-   */
-  private getCommandOutput(commandId: string): ConsoleOutput[] {
-    const commandExecution = this.commandExecutions.get(commandId);
-    if (!commandExecution) {
-      return [];
-    }
-
-    // Return the output that was captured for this command
-    return commandExecution.output;
-  }
-
-  /**
-   * Detect command completion by analyzing output patterns
-   */
-  private detectCommandCompletion(sessionId: string, output: string): boolean {
-    const promptPattern = this.promptPatterns.get(sessionId);
-    if (!promptPattern) {
-      return false;
-    }
-
-    // Check if the output contains a prompt indicating command completion
-    return promptPattern.test(output);
-  }
-
-  /**
-   * Execute a command in a session with proper isolation
-   */
   async executeCommandInSession(
     sessionId: string,
     command: string,
@@ -948,130 +662,9 @@ export class ConsoleManager extends EventEmitter {
     duration: number;
     status: 'completed' | 'failed' | 'timeout';
   }> {
-    console.error(
-      `[DEBUG-HANG] executeCommandInSession called with:`,
-      JSON.stringify(
-        {
-          sessionId,
-          command,
-          args,
-          timeout,
-        },
-        null,
-        2
-      )
-    );
-
-    const session = this.sessions.get(sessionId);
-    if (!session) {
-      throw new Error(`Session ${sessionId} not found`);
-    }
-
-    if (session.executionState !== 'idle') {
-      throw new Error(
-        `Session ${sessionId} is currently ${session.executionState}. Wait for current command to complete.`
-      );
-    }
-
-    // Start command execution tracking
-    const commandId = this.startCommandExecution(sessionId, command, args);
-
-    try {
-      // Add command start boundary marker
-      const startBoundaryOutput: ConsoleOutput = {
-        sessionId,
-        type: 'stdout',
-        data: '',
-        timestamp: new Date(),
-        commandId,
-        isCommandBoundary: true,
-        boundaryType: 'start',
-        sequence: this.outputSequenceCounters.get(sessionId) || 0,
-      };
-      this.addToBuffer(sessionId, startBoundaryOutput);
-
-      // Send the command
-      const fullCommand =
-        args && args.length > 0 ? `${command} ${args.join(' ')}` : command;
-      await this.sendInput(sessionId, fullCommand + '\n');
-
-      // Wait for command completion or timeout
-      const result = await this.waitForCommandCompletion(commandId, timeout);
-
-      return {
-        commandId,
-        output: this.getCommandOutput(commandId),
-        exitCode: result.exitCode,
-        duration: result.duration,
-        status: result.status,
-      };
-    } catch (error) {
-      // Mark command as failed
-      this.completeCommandExecution(commandId, -1);
-      throw error;
-    }
+    return this.commandQueueManager.executeCommandInSession(sessionId, command, args, timeout);
   }
 
-  /**
-   * Wait for a command to complete
-   */
-  private async waitForCommandCompletion(
-    commandId: string,
-    timeout: number
-  ): Promise<{
-    exitCode?: number;
-    duration: number;
-    status: 'completed' | 'failed' | 'timeout';
-  }> {
-    const commandExecution = this.commandExecutions.get(commandId);
-    if (!commandExecution) {
-      throw new Error(`Command execution ${commandId} not found`);
-    }
-
-    const startTime = Date.now();
-    const checkInterval = 100; // Check every 100ms
-
-    return new Promise((resolve, reject) => {
-      const checkCompletion = () => {
-        const currentExecution = this.commandExecutions.get(commandId);
-        if (!currentExecution) {
-          reject(new Error(`Command execution ${commandId} was removed`));
-          return;
-        }
-
-        // Check if command completed
-        if (currentExecution.status !== 'executing') {
-          resolve({
-            exitCode: currentExecution.exitCode,
-            duration: currentExecution.duration || Date.now() - startTime,
-            status:
-              currentExecution.status === 'completed' ? 'completed' : 'failed',
-          });
-          return;
-        }
-
-        // Check timeout
-        if (Date.now() - startTime > timeout) {
-          this.completeCommandExecution(commandId, -1);
-          resolve({
-            exitCode: -1,
-            duration: Date.now() - startTime,
-            status: 'timeout',
-          });
-          return;
-        }
-
-        // Continue checking
-        setTimeout(checkCompletion, checkInterval);
-      };
-
-      checkCompletion();
-    });
-  }
-
-  /**
-   * Get session execution state
-   */
   getSessionExecutionState(sessionId: string): {
     sessionId: string;
     executionState: 'idle' | 'executing' | 'waiting';
@@ -1085,7 +678,8 @@ export class ConsoleManager extends EventEmitter {
       return null;
     }
 
-    const commandHistory = this.sessionCommandQueue.get(sessionId) || [];
+    const commandHistory = this.commandQueueManager.getSessionCommandHistory(sessionId)
+      .map((cmd) => cmd.id);
 
     return {
       sessionId,
@@ -1097,40 +691,16 @@ export class ConsoleManager extends EventEmitter {
     };
   }
 
-  /**
-   * Get command execution details
-   */
   getCommandExecutionDetails(commandId: string): CommandExecution | null {
-    return this.commandExecutions.get(commandId) || null;
+    return this.commandQueueManager.getCommandExecutionDetails(commandId);
   }
 
-  /**
-   * Get all command executions for a session
-   */
   getSessionCommandHistory(sessionId: string): CommandExecution[] {
-    const commandIds = this.sessionCommandQueue.get(sessionId) || [];
-    return commandIds
-      .map((id) => this.commandExecutions.get(id))
-      .filter((cmd): cmd is CommandExecution => cmd !== undefined);
+    return this.commandQueueManager.getSessionCommandHistory(sessionId);
   }
 
-  /**
-   * Clear completed command history for a session (keeping only recent commands)
-   */
   cleanupSessionCommandHistory(sessionId: string, keepLast: number = 10): void {
-    const commandIds = this.sessionCommandQueue.get(sessionId) || [];
-
-    if (commandIds.length > keepLast) {
-      const toRemove = commandIds.splice(0, commandIds.length - keepLast);
-      toRemove.forEach((commandId) => {
-        this.commandExecutions.delete(commandId);
-      });
-
-      this.sessionCommandQueue.set(sessionId, commandIds);
-      this.logger.debug(
-        `Cleaned up ${toRemove.length} old command executions for session ${sessionId}`
-      );
-    }
+    this.commandQueueManager.cleanupSessionCommandHistory(sessionId, keepLast);
   }
 
   /**
@@ -2138,7 +1708,7 @@ export class ConsoleManager extends EventEmitter {
   /**
    * Enhanced timeout recovery for SSH sessions with session persistence and state restoration
    */
-  private async attemptTimeoutRecovery(
+  async attemptTimeoutRecovery(
     sessionId: string,
     command: QueuedCommand
   ): Promise<TimeoutRecoveryResult> {
@@ -2408,7 +1978,7 @@ export class ConsoleManager extends EventEmitter {
       );
       return {
         success: true,
-        restoredCommands: this.restoreCommandQueueFromPersistence(sessionId),
+        restoredCommands: this.commandQueueManager.restoreCommandQueueFromPersistence(sessionId),
         metadata: {
           retryCount: command.retryCount,
           backoffDelay,
@@ -2465,35 +2035,6 @@ export class ConsoleManager extends EventEmitter {
   }
 
   /**
-   * Restore command queue from persistent data
-   */
-  private restoreCommandQueueFromPersistence(sessionId: string): number {
-    const serializedCommands = this.persistenceManager.restoreCommandQueueFromPersistence(sessionId);
-    const queue = this.commandQueues.get(sessionId);
-
-    if (serializedCommands.length === 0 || !queue) {
-      return 0;
-    }
-
-    // Deserialize and restore pending commands
-    const restoredCommands = this.deserializeCommandQueue(
-      serializedCommands,
-      sessionId
-    );
-
-    // Add restored commands to the queue (prioritize them)
-    restoredCommands.forEach((cmd) => {
-      cmd.priority = 1; // High priority for restored commands
-      queue.commands.unshift(cmd); // Add to front of queue
-    });
-
-    this.logger.info(
-      `Restored ${restoredCommands.length} commands to queue for session ${sessionId}`
-    );
-    return restoredCommands.length;
-  }
-
-  /**
    * Enhanced SSH reconnection with session persistence
    */
   private async attemptSSHReconnectionWithPersistence(
@@ -2533,7 +2074,7 @@ export class ConsoleManager extends EventEmitter {
         // Restore session state after reconnection
         await this.persistenceManager.restoreSessionStateFromBookmark(sessionId);
         const restoredCommands =
-          this.restoreCommandQueueFromPersistence(sessionId);
+          this.commandQueueManager.restoreCommandQueueFromPersistence(sessionId);
 
         // Update connection state
         if (persistentData) {
@@ -2818,10 +2359,7 @@ export class ConsoleManager extends EventEmitter {
    */
   private async clearStaleOutput(sessionId: string): Promise<void> {
     // Clear command queue output buffer
-    const queue = this.commandQueues.get(sessionId);
-    if (queue) {
-      queue.outputBuffer = '';
-    }
+    this.commandQueueManager.clearQueueOutputBuffer(sessionId);
 
     // Optional: Clear session output buffer if needed
     const outputBuffer = this.outputBuffers.get(sessionId);
@@ -2835,7 +2373,7 @@ export class ConsoleManager extends EventEmitter {
   /**
    * Utility method to add delay with promise
    */
-  private async delay(ms: number): Promise<void> {
+  async delay(ms: number): Promise<void> {
     return new Promise((resolve) => setTimeout(resolve, ms));
   }
 
@@ -6007,24 +5545,7 @@ export class ConsoleManager extends EventEmitter {
     sessionId: string,
     options: SessionOptions
   ): void {
-    // Command queue system handles prompt detection
-    // Set custom prompt pattern if specified in options
-    const sshOptions = options.sshOptions;
-    if (sshOptions?.host && sshOptions?.username) {
-      const customPattern = new RegExp(
-        `(?:^|\\n)(${sshOptions.username}@${sshOptions.host}[^$#]*[$#])\\s*$`,
-        'm'
-      );
-      this.setSessionPromptPattern(sessionId, customPattern);
-
-      this.logger.info(
-        `Configured custom prompt pattern for SSH session ${sessionId}`,
-        {
-          host: sshOptions.host,
-          username: sshOptions.username,
-        }
-      );
-    }
+    this.commandQueueManager.configurePromptDetection(sessionId, options.sshOptions);
   }
 
   /**
@@ -7350,471 +6871,23 @@ export class ConsoleManager extends EventEmitter {
     });
   }
 
-  /**
-   * Initialize command queue for a session with persistence support
-   */
   private initializeCommandQueue(sessionId: string): void {
-    if (!this.commandQueues.has(sessionId)) {
-      const persistentData = this.persistenceManager.getPersistenceData(sessionId);
-      const bookmarks = this.persistenceManager.getBookmarks(sessionId);
-
-      const queue: SessionCommandQueue = {
-        sessionId,
-        commands: [],
-        isProcessing: false,
-        lastCommandTime: 0,
-        acknowledgmentTimeout: null,
-        outputBuffer: '',
-        expectedPrompt: this.queueConfig.defaultPromptPattern,
-        persistentData,
-        bookmarks,
-      };
-
-      // Restore pending commands if available
-      if (persistentData && persistentData.pendingCommands.length > 0) {
-        queue.commands = this.deserializeCommandQueue(
-          persistentData.pendingCommands,
-          sessionId
-        );
-        this.logger.info(
-          `Restored ${queue.commands.length} pending commands for session ${sessionId}`
-        );
-      }
-
-      this.commandQueues.set(sessionId, queue);
-      this.logger.debug(
-        `Command queue with persistence initialized for session ${sessionId}`
-      );
-    }
+    this.commandQueueManager.initializeCommandQueue(sessionId);
   }
 
-  /**
-   * Process the command queue for a session
-   */
-  private async processCommandQueue(sessionId: string): Promise<void> {
-    const queue = this.commandQueues.get(sessionId);
-    const sshChannel = this.sshChannels.get(sessionId);
-
-    if (
-      !queue ||
-      !sshChannel ||
-      queue.isProcessing ||
-      queue.commands.length === 0
-    ) {
-      return;
-    }
-
-    queue.isProcessing = true;
-    this.logger.debug(
-      `Processing command queue for session ${sessionId}, ${queue.commands.length} commands pending`
-    );
-
-    try {
-      while (queue.commands.length > 0) {
-        const command = queue.commands[0];
-
-        if (command.sent && !command.acknowledged) {
-          // Calculate adaptive acknowledgment timeout based on network conditions
-          const session = this.sessions.get(sessionId);
-          const adaptiveTimeout = session?.sshOptions?.host
-            ? this.networkMetricsManager.calculateAdaptiveTimeout(session.sshOptions.host)
-            : this.queueConfig.acknowledgmentTimeout;
-
-          // Wait for acknowledgment or timeout
-          const waitTime = Date.now() - command.timestamp.getTime();
-          const effectiveTimeout = Math.max(
-            adaptiveTimeout,
-            this.queueConfig.acknowledgmentTimeout
-          );
-
-          if (waitTime < effectiveTimeout) {
-            // Still within timeout window, but check if we should provide progress updates
-            if (waitTime > effectiveTimeout * 0.7) {
-              // Getting close to timeout, log progress
-              this.logger.debug(
-                `Command waiting for acknowledgment: ${sessionId}, ${waitTime}ms/${effectiveTimeout}ms`
-              );
-            }
-            break; // Wait for acknowledgment
-          } else {
-            // Timeout reached - enhanced handling
-            const timeoutDuration = Date.now() - command.timestamp.getTime();
-            this.logger.warn(
-              `Command acknowledgment timeout for session ${sessionId} after ${timeoutDuration}ms (adaptive: ${adaptiveTimeout}ms), command: ${command.input.substring(0, 50)}...`
-            );
-
-            // Create detailed timeout context for error recovery
-            const timeoutContext = {
-              sessionId,
-              operation: 'command_acknowledgment_timeout',
-              error: new Error(
-                `Command acknowledgment timeout after ${timeoutDuration}ms`
-              ),
-              timestamp: Date.now(),
-              metadata: {
-                commandInput: command.input.substring(0, 200),
-                commandRetryCount: command.retryCount || 0,
-                timeoutDuration,
-                adaptiveTimeout,
-                effectiveTimeout,
-                networkQuality:
-                  this.networkMetricsManager.getMetrics(session?.sshOptions?.host || '')
-                    ?.connectionQuality || 'unknown',
-              },
-            };
-
-            // Check if this command has been retried too many times
-            const maxCommandRetries = 2;
-            if ((command.retryCount || 0) >= maxCommandRetries) {
-              this.logger.error(
-                `Command retry limit exceeded for session ${sessionId}, giving up`
-              );
-
-              // Attempt error recovery as last resort before failing
-              const errorRecoveryResult =
-                await this.errorRecovery.attemptRecovery(timeoutContext);
-              if (errorRecoveryResult) {
-                this.logger.info(
-                  `Error recovery provided fallback for command timeout in session ${sessionId}`
-                );
-                command.resolve('Command completed via error recovery');
-              } else {
-                command.reject(
-                  new Error(
-                    `Command acknowledgment timeout after ${maxCommandRetries} retries`
-                  )
-                );
-              }
-
-              queue.commands.shift();
-              continue;
-            }
-
-            // Attempt timeout recovery with enhanced context
-            const recoveryResult = await this.attemptTimeoutRecovery(
-              sessionId,
-              command
-            );
-            if (recoveryResult.success) {
-              this.logger.info(
-                `Successfully recovered from timeout for session ${sessionId}${recoveryResult.metadata ? ` (${JSON.stringify(recoveryResult.metadata)})` : ''}`
-              );
-
-              // Reset command state for retry with exponential backoff
-              command.timestamp = new Date();
-              command.retryCount = (command.retryCount || 0) + 1;
-
-              // Apply adaptive backoff based on network conditions and retry count
-              const networkMetrics = this.networkMetricsManager.getMetrics(
-                session?.sshOptions?.host || ''
-              );
-              let backoffMs = 1000 * Math.pow(2, command.retryCount - 1); // Exponential backoff
-
-              // Adjust backoff based on network quality
-              if (networkMetrics) {
-                switch (networkMetrics.connectionQuality) {
-                  case 'poor':
-                    backoffMs *= 2.5; // Longer backoff for poor connections
-                    break;
-                  case 'fair':
-                    backoffMs *= 1.8;
-                    break;
-                  case 'good':
-                    backoffMs *= 1.2;
-                    break;
-                  case 'excellent':
-                    // No multiplier for excellent connections
-                    break;
-                }
-              }
-
-              // Cap the backoff at 10 seconds
-              backoffMs = Math.min(backoffMs, 10000);
-
-              if (backoffMs > 0) {
-                this.logger.info(
-                  `Applying ${backoffMs}ms adaptive backoff before command retry (network: ${networkMetrics?.connectionQuality || 'unknown'})`
-                );
-                await this.delay(backoffMs);
-              }
-
-              continue; // Retry the command
-            } else {
-              // Recovery failed, try error recovery system as fallback
-              const errorRecoveryResult =
-                await this.errorRecovery.attemptRecovery(timeoutContext);
-              if (errorRecoveryResult) {
-                this.logger.info(
-                  `Error recovery provided fallback after timeout recovery failure for session ${sessionId}`
-                );
-                command.resolve(
-                  'Command completed via error recovery after timeout'
-                );
-                queue.commands.shift();
-                continue;
-              }
-
-              // All recovery attempts failed
-              this.logger.error(
-                `All recovery attempts failed for command timeout in session ${sessionId}: ${recoveryResult.error}`
-              );
-              command.reject(
-                new Error(
-                  `Command acknowledgment timeout: ${recoveryResult.error}`
-                )
-              );
-              queue.commands.shift();
-              continue;
-            }
-          }
-        }
-
-        if (!command.sent) {
-          // Send the command
-          try {
-            await this.sendCommandToSSH(sessionId, command, sshChannel);
-            command.sent = true;
-            command.timestamp = new Date();
-
-            // Update persistent data with command activity
-            const persistentData = this.persistenceManager.getPersistenceData(sessionId);
-            if (persistentData) {
-              persistentData.lastActivity = new Date();
-              persistentData.commandHistory.push(command.input);
-              // Keep only last 50 commands in history
-              if (persistentData.commandHistory.length > 50) {
-                persistentData.commandHistory =
-                  persistentData.commandHistory.slice(-50);
-              }
-            }
-
-            // Create bookmark on command if using hybrid or on-command strategy
-            const bookmarkStrategy = this.persistenceManager.getContinuityConfig().bookmarkStrategy;
-            if (
-              bookmarkStrategy === 'on-command' ||
-              bookmarkStrategy === 'hybrid'
-            ) {
-              await this.createSessionBookmark(sessionId, 'on-command');
-            }
-
-            // Wait for inter-command delay
-            if (queue.commands.length > 1) {
-              await this.delay(this.queueConfig.interCommandDelay);
-            }
-          } catch (error) {
-            this.logger.error(
-              `Failed to send command to SSH session ${sessionId}:`,
-              error
-            );
-            command.reject(error as Error);
-            queue.commands.shift();
-            continue;
-          }
-        }
-
-        // Check for acknowledgment
-        if (this.queueConfig.enablePromptDetection && queue.expectedPrompt) {
-          if (queue.expectedPrompt.test(queue.outputBuffer)) {
-            // Command acknowledged
-            command.acknowledged = true;
-            command.resolve();
-            queue.commands.shift();
-            queue.outputBuffer = ''; // Clear buffer after acknowledgment
-            queue.lastCommandTime = Date.now();
-          } else {
-            // Wait for more output
-            break;
-          }
-        } else {
-          // No prompt detection, acknowledge immediately
-          command.acknowledged = true;
-          command.resolve();
-          queue.commands.shift();
-          queue.lastCommandTime = Date.now();
-        }
-      }
-    } finally {
-      queue.isProcessing = false;
-    }
-
-    // Schedule next processing if there are more commands
-    if (queue.commands.length > 0) {
-      setTimeout(() => this.processCommandQueue(sessionId), 100);
-    }
-  }
-
-  /**
-   * Send a command to SSH channel with proper error handling
-   */
-  private async sendCommandToSSH(
-    sessionId: string,
-    command: QueuedCommand,
-    sshChannel: ClientChannel
-  ): Promise<void> {
-    return new Promise<void>((resolve, reject) => {
-      const timeout = setTimeout(() => {
-        reject(new Error('SSH write timeout'));
-      }, this.queueConfig.commandTimeout);
-
-      try {
-        // Ensure command ends with newline for proper execution
-        let commandToSend = command.input;
-        if (!commandToSend.endsWith('\n') && !commandToSend.endsWith('\r\n')) {
-          commandToSend += '\n';
-        }
-
-        sshChannel.write(commandToSend, (error) => {
-          clearTimeout(timeout);
-
-          if (error) {
-            this.logger.error(
-              `SSH write error for session ${sessionId}:`,
-              error
-            );
-            reject(error);
-          } else {
-            // Record input to monitoring system
-            if (this.monitoringSystem.isSessionBeingMonitored(sessionId)) {
-              this.monitoringSystem.recordEvent(sessionId, 'input', {
-                size: command.input.length,
-                type: 'ssh_queued_input',
-                commandId: command.id,
-              });
-            }
-
-            this.emitEvent({
-              sessionId,
-              type: 'input',
-              timestamp: new Date(),
-              data: {
-                input: command.input,
-                ssh: true,
-                queued: true,
-                commandId: command.id,
-              },
-            });
-
-            this.logger.debug(
-              `Command sent to SSH session ${sessionId}: ${command.input.substring(0, 100)}...`
-            );
-            resolve();
-          }
-        });
-      } catch (error) {
-        clearTimeout(timeout);
-        reject(error as Error);
-      }
-    });
-  }
-
-  /**
-   * Handle SSH output for command queue acknowledgment
-   */
   private handleSSHOutputForQueue(sessionId: string, data: string): void {
-    const queue = this.commandQueues.get(sessionId);
-    if (!queue) return;
-
-    // Append to output buffer for prompt detection
-    queue.outputBuffer += data;
-
-    // Keep buffer size manageable
-    if (queue.outputBuffer.length > 4096) {
-      queue.outputBuffer = queue.outputBuffer.slice(-2048);
-    }
-
-    // Trigger queue processing if there are pending commands
-    if (queue.commands.length > 0 && !queue.isProcessing) {
-      setImmediate(() => this.processCommandQueue(sessionId));
-    }
+    this.commandQueueManager.handleSSHOutputForQueue(sessionId, data);
   }
 
-  /**
-   * Add command to queue
-   */
-  private async addCommandToQueue(
+  private addCommandToQueue(
     sessionId: string,
     input: string
   ): Promise<void> {
-    this.initializeCommandQueue(sessionId);
-    const queue = this.commandQueues.get(sessionId)!;
-
-    if (queue.commands.length >= this.queueConfig.maxQueueSize) {
-      throw new Error(
-        `Command queue full for session ${sessionId} (max: ${this.queueConfig.maxQueueSize})`
-      );
-    }
-
-    return new Promise<void>((resolve, reject) => {
-      const command: QueuedCommand = {
-        id: uuidv4(),
-        sessionId,
-        input,
-        timestamp: new Date(),
-        retryCount: 0,
-        resolve,
-        reject,
-        acknowledged: false,
-        sent: false,
-      };
-
-      queue.commands.push(command);
-      this.logger.debug(
-        `Command queued for session ${sessionId}: ${input.substring(0, 50)}... (queue size: ${queue.commands.length})`
-      );
-
-      // Start processing
-      setImmediate(() => this.processCommandQueue(sessionId));
-    });
+    return this.commandQueueManager.addCommandToQueue(sessionId, input);
   }
 
-  /**
-   * Clear command queue for a session
-   */
   private clearCommandQueue(sessionId: string): void {
-    const queue = this.commandQueues.get(sessionId);
-    if (!queue) return;
-
-    // Reject all pending commands
-    queue.commands.forEach((command) => {
-      if (!command.acknowledged) {
-        command.reject(new Error('Session terminated'));
-      }
-    });
-
-    // Clear timeout if exists
-    if (queue.acknowledgmentTimeout) {
-      clearTimeout(queue.acknowledgmentTimeout);
-    }
-
-    // Remove queue
-    this.commandQueues.delete(sessionId);
-
-    // Clear processing interval
-    const interval = this.commandProcessingIntervals.get(sessionId);
-    if (interval) {
-      clearTimeout(interval);
-      this.commandProcessingIntervals.delete(sessionId);
-    }
-
-    this.logger.debug(`Command queue cleared for session ${sessionId}`);
-  }
-
-  /**
-   * Get command queue statistics
-   */
-  private getCommandQueueStats(sessionId: string): {
-    queueSize: number;
-    processing: boolean;
-    lastCommandTime: number;
-  } | null {
-    const queue = this.commandQueues.get(sessionId);
-    if (!queue) return null;
-
-    return {
-      queueSize: queue.commands.length,
-      processing: queue.isProcessing,
-      lastCommandTime: queue.lastCommandTime,
-    };
+    this.commandQueueManager.clearCommandQueue(sessionId);
   }
 
   async sendInput(sessionId: string, input: string): Promise<void> {
@@ -8547,6 +7620,64 @@ export class ConsoleManager extends EventEmitter {
     return session;
   }
 
+  updateSessionExecutionState(sessionId: string, state: 'idle' | 'executing', commandId?: string, completedAt?: Date): void {
+    const session = this.sessions.get(sessionId);
+    if (!session) return;
+    session.executionState = state;
+    if (state === 'executing' && commandId) {
+      session.currentCommandId = commandId;
+    } else if (state === 'idle') {
+      session.currentCommandId = undefined;
+      if (completedAt) {
+        session.lastCommandCompletedAt = completedAt;
+      }
+    }
+    this.sessions.set(sessionId, session);
+  }
+
+  removeActiveCommand(sessionId: string, commandId: string): void {
+    const session = this.sessions.get(sessionId);
+    if (session) {
+      session.activeCommands.delete(commandId);
+      this.sessions.set(sessionId, session);
+    }
+  }
+
+  getOutputBufferLength(sessionId: string): number {
+    return this.outputBuffers.get(sessionId)?.length || 0;
+  }
+
+  getSSHChannel(sessionId: string): any {
+    return this.sshChannels.get(sessionId);
+  }
+
+  getSessionSSHHost(sessionId: string): string | undefined {
+    const session = this.sessions.get(sessionId);
+    return session?.sshOptions?.host;
+  }
+
+  addToOutputBuffer(sessionId: string, output: any): void {
+    this.addToBuffer(sessionId, output);
+  }
+
+  isSessionMonitored(sessionId: string): boolean {
+    return this.monitoringSystem.isSessionBeingMonitored(sessionId);
+  }
+
+  recordMonitoringEvent(sessionId: string, type: string, data: any): void {
+    this.monitoringSystem.recordEvent(sessionId, type, data);
+  }
+
+  recordCommandMetrics(success: boolean, duration: number, command: string, sessionId: string): void {
+    if (this.metricsCollector) {
+      this.metricsCollector.recordCommandExecution(success, duration, command, sessionId);
+    }
+  }
+
+  isSelfHealingEnabled(): boolean {
+    return this.selfHealingEnabled;
+  }
+
   getAllSessions(): ConsoleSession[] {
     return Array.from(this.sessions.values());
   }
@@ -8667,11 +7798,8 @@ export class ConsoleManager extends EventEmitter {
       );
     }
 
-    // Clean up command executions for this session
-    const commandIds = this.sessionCommandQueue.get(sessionId) || [];
-    commandIds.forEach((commandId) => {
-      this.commandExecutions.delete(commandId);
-    });
+    // Clean up command queue manager data for this session
+    this.commandQueueManager.deleteSessionData(sessionId);
 
     // Clean up enhanced session persistence data
     this.persistenceManager.deleteSessionData(sessionId);
@@ -8685,47 +7813,15 @@ export class ConsoleManager extends EventEmitter {
     this.streamManagers.delete(sessionId);
     // Cleanup pagination manager for this session
     this.paginationManager.removeSession(sessionId);
-    this.sessionCommandQueue.delete(sessionId);
-    this.outputSequenceCounters.delete(sessionId);
-    this.promptPatterns.delete(sessionId);
 
-    this.logger.debug(
-      `Cleaned up session ${sessionId} and ${commandIds.length} command executions`
-    );
+    this.logger.debug(`Cleaned up session ${sessionId}`);
   }
 
   private addToBuffer(sessionId: string, output: ConsoleOutput) {
     const buffer = this.outputBuffers.get(sessionId) || [];
 
-    // Add sequence number for ordering
-    const sequenceCounter = this.outputSequenceCounters.get(sessionId) || 0;
-    output.sequence = sequenceCounter;
-    this.outputSequenceCounters.set(sessionId, sequenceCounter + 1);
-
-    // Associate output with current command if one is executing
-    const session = this.sessions.get(sessionId);
-    if (session && session.currentCommandId) {
-      output.commandId = session.currentCommandId;
-
-      // Add to command-specific output buffer
-      const commandExecution = this.commandExecutions.get(
-        session.currentCommandId
-      );
-      if (commandExecution) {
-        commandExecution.output.push(output);
-        commandExecution.totalOutputLines++;
-
-        // Check if this output indicates command completion
-        if (this.detectCommandCompletion(sessionId, output.data)) {
-          // Mark output as command boundary
-          output.isCommandBoundary = true;
-          output.boundaryType = 'end';
-
-          // Complete the command execution
-          this.completeCommandExecution(session.currentCommandId);
-        }
-      }
-    }
+    // Add sequence number and handle command tracking via commandQueueManager
+    this.commandQueueManager.processOutputForCommandTracking(sessionId, output);
 
     buffer.push(output);
 
@@ -8736,7 +7832,7 @@ export class ConsoleManager extends EventEmitter {
     this.outputBuffers.set(sessionId, buffer);
   }
 
-  private emitEvent(event: ConsoleEvent) {
+  emitEvent(event: ConsoleEvent) {
     this.emit('console-event', event);
   }
 
@@ -8816,7 +7912,7 @@ export class ConsoleManager extends EventEmitter {
                 }
               : null,
             sessionStatus: this.sessions.get(sessionId)?.status,
-            queueStats: this.getCommandQueueStats(sessionId),
+            queueStats: this.commandQueueManager.getSessionQueueStats(sessionId),
           };
 
           this.logger.error(
@@ -8845,9 +7941,7 @@ export class ConsoleManager extends EventEmitter {
     sessionId: string,
     timeout: number = 10000
   ): Promise<{ detected: boolean; prompt?: string; output: string }> {
-    const queue = this.commandQueues.get(sessionId);
-    const defaultPattern =
-      queue?.expectedPrompt || this.queueConfig.defaultPromptPattern;
+    const defaultPattern = this.commandQueueManager.getExpectedPrompt(sessionId);
 
     try {
       const result = await this.waitForOutput(sessionId, defaultPattern, {
@@ -9595,88 +8689,39 @@ export class ConsoleManager extends EventEmitter {
 
   // Command Queue Management Methods
 
-  /**
-   * Configure command queue settings
-   */
   configureCommandQueue(config: Partial<CommandQueueConfig>): void {
-    this.queueConfig = { ...this.queueConfig, ...config };
-    this.logger.info('Command queue configuration updated:', config);
+    this.commandQueueManager.configureCommandQueue(config);
   }
 
-  /**
-   * Get command queue statistics for a session
-   */
   getSessionQueueStats(sessionId: string) {
-    return this.getCommandQueueStats(sessionId);
+    return this.commandQueueManager.getSessionQueueStats(sessionId);
   }
 
-  /**
-   * Get all command queue statistics
-   */
   getAllCommandQueueStats(): Record<
     string,
     { queueSize: number; processing: boolean; lastCommandTime: number }
   > {
-    const stats: Record<
-      string,
-      { queueSize: number; processing: boolean; lastCommandTime: number }
-    > = {};
-
-    this.commandQueues.forEach((queue, sessionId) => {
-      stats[sessionId] = {
-        queueSize: queue.commands.length,
-        processing: queue.isProcessing,
-        lastCommandTime: queue.lastCommandTime,
-      };
-    });
-
-    return stats;
+    return this.commandQueueManager.getAllCommandQueueStats();
   }
 
-  /**
-   * Clear command queue for a specific session (public method)
-   */
   clearSessionCommandQueue(sessionId: string): void {
-    this.clearCommandQueue(sessionId);
+    this.commandQueueManager.clearSessionCommandQueue(sessionId);
   }
 
-  /**
-   * Clear all command queues
-   */
   clearAllCommandQueues(): void {
-    Array.from(this.commandQueues.keys()).forEach((sessionId) => {
-      this.clearCommandQueue(sessionId);
-    });
+    this.commandQueueManager.clearAllCommandQueues();
   }
 
-  /**
-   * Set custom prompt pattern for a session
-   */
   setSessionPromptPattern(sessionId: string, pattern: RegExp): boolean {
-    const queue = this.commandQueues.get(sessionId);
-    if (!queue) {
-      return false;
-    }
-
-    queue.expectedPrompt = pattern;
-    this.logger.debug(
-      `Updated prompt pattern for session ${sessionId}: ${pattern}`
-    );
-    return true;
+    return this.commandQueueManager.setSessionPromptPattern(sessionId, pattern);
   }
 
-  /**
-   * Get current command queue configuration
-   */
   getCommandQueueConfig(): CommandQueueConfig {
-    return { ...this.queueConfig };
+    return this.commandQueueManager.getCommandQueueConfig();
   }
 
-  /**
-   * Force process command queue for a session (useful for debugging)
-   */
   async forceProcessCommandQueue(sessionId: string): Promise<void> {
-    await this.processCommandQueue(sessionId);
+    await this.commandQueueManager.forceProcessCommandQueue(sessionId);
   }
 
   /**
@@ -9823,14 +8868,7 @@ export class ConsoleManager extends EventEmitter {
     this.persistenceManager.dispose();
 
     // Clean up command queue system
-    this.commandQueues.forEach((queue, sessionId) => {
-      this.clearCommandQueue(sessionId);
-    });
-    this.commandQueues.clear();
-    for (const [, timer] of this.commandProcessingIntervals) {
-      clearTimeout(timer);
-    }
-    this.commandProcessingIntervals.clear();
+    this.commandQueueManager.dispose();
 
     this.logger.info('Enhanced session persistence system shutdown complete');
   }
@@ -9936,12 +8974,7 @@ export class ConsoleManager extends EventEmitter {
             break;
 
           case 'flush-pending-commands':
-            // Clear command queue for this session
-            const commandQueue = this.commandQueues.get(data.sessionId);
-            if (commandQueue) {
-              commandQueue.commands = [];
-              commandQueue.outputBuffer = '';
-            }
+            this.commandQueueManager.flushPendingCommands(data.sessionId);
             break;
 
           case 'reinitialize-prompt-patterns':
@@ -10280,9 +9313,7 @@ export class ConsoleManager extends EventEmitter {
             );
 
             // Update interactive state with current issues
-            const commandQueue = this.commandQueues.get(sessionId);
-            const pendingCommands =
-              commandQueue?.commands.map((cmd) => cmd.input) || [];
+            const pendingCommands = this.commandQueueManager.getPendingCommandInputs(sessionId);
 
             await this.sessionRecovery.updateInteractiveState(sessionId, {
               isInteractive: true,
@@ -10511,8 +9542,7 @@ export class ConsoleManager extends EventEmitter {
     }
 
     // Resource utilization (simplified)
-    const commandQueue = this.commandQueues.get(sessionId);
-    if (commandQueue?.commands.length > 5) cost += 0.1;
+    if (this.commandQueueManager.getQueueSize(sessionId) > 5) cost += 0.1;
 
     return Math.min(cost, 1.0); // Cap at 1.0
   }
@@ -11168,12 +10198,8 @@ export class ConsoleManager extends EventEmitter {
     const buffer = this.outputBuffers.get(sessionId)!;
     buffer.push(output);
 
-    // Update output sequence counter
-    const currentSequence = this.outputSequenceCounters.get(sessionId) || 0;
-    this.outputSequenceCounters.set(sessionId, currentSequence + 1);
-
     // Update output with sequence number
-    output.sequence = currentSequence + 1;
+    output.sequence = this.commandQueueManager.getNextSequenceNumber(sessionId);
 
     // Emit output event
     this.emit('output', output);
