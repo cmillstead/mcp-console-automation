@@ -388,7 +388,7 @@ export class SSHConnectionKeepAlive extends EventEmitter {
             return;
           }
 
-          stream.on('close', (code) => {
+          stream.on('close', (code: number) => {
             if (code === 0) {
               resolve();
             } else {
@@ -396,7 +396,7 @@ export class SSHConnectionKeepAlive extends EventEmitter {
             }
           });
 
-          stream.on('error', (error) => {
+          stream.on('error', (error: Error) => {
             reject(error);
           });
         });
@@ -615,7 +615,7 @@ export class SSHConnectionKeepAlive extends EventEmitter {
           }
 
           let output = '';
-          stream.on('close', (code) => {
+          stream.on('close', (code: number) => {
             if (code === 0 && output.includes('keepalive')) {
               resolve();
             } else {

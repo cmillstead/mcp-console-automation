@@ -310,7 +310,7 @@ export class SSHSessionHandler extends EventEmitter {
     });
 
     // Handle channel errors
-    channel.on('error', (err) => {
+    channel.on('error', (err: Error) => {
       this.logger.error(`Channel error for session ${id}:`, err);
       this.emit('error', { sessionId: id, error: err });
     });

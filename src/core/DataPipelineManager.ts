@@ -26,8 +26,8 @@ export interface DataPipelineExecution {
   status: 'pending' | 'running' | 'completed' | 'failed';
   startTime: Date;
   endTime?: Date;
-  inputs: Record<string, any>;
-  outputs: Record<string, any>;
+  inputs: Record<string, unknown>;
+  outputs: Record<string, unknown>;
   metrics: DataPipelineMetrics;
   errors: DataError[];
   logs: DataLog[];
@@ -49,7 +49,7 @@ export interface DataError {
   stage: string;
   recordId?: string;
   error: string;
-  data?: any;
+  data?: unknown;
 }
 
 export interface DataLog {
@@ -93,8 +93,8 @@ export class DataPipelineManager extends EventEmitter {
    */
   async executePipeline(
     pipelineId: string,
-    inputs: Record<string, any>,
-    context?: any
+    inputs: Record<string, unknown>,
+    context?: Record<string, unknown>
   ): Promise<string> {
     const pipeline = this.pipelines.get(pipelineId);
     if (!pipeline) {
@@ -165,13 +165,13 @@ export class DataPipelineManager extends EventEmitter {
       this.emit('pipeline-completed', executionId);
 
       return executionId;
-    } catch (error: any) {
+    } catch (error: unknown) {
       execution.status = 'failed';
       execution.endTime = new Date();
       execution.errors.push({
         timestamp: new Date(),
         stage: 'pipeline',
-        error: error.message,
+        error: error instanceof Error ? error.message : String(error),
         data: { pipelineId, inputs },
       });
 
@@ -185,11 +185,11 @@ export class DataPipelineManager extends EventEmitter {
    */
   private async loadInputData(
     pipeline: DataFlowDefinition,
-    inputs: Record<string, any>,
+    inputs: Record<string, unknown>,
     execution: DataPipelineExecution,
-    context?: any
-  ): Promise<Record<string, any>> {
-    const data: Record<string, any> = {};
+    context?: Record<string, unknown>
+  ): Promise<Record<string, unknown>> {
+    const data: Record<string, unknown> = {};
 
     this.addLog(
       execution,
@@ -212,11 +212,12 @@ export class DataPipelineManager extends EventEmitter {
           'input',
           `Loaded ${recordCount} records from ${input.name}`
         );
-      } catch (error: any) {
+      } catch (error: unknown) {
+        const errMsg = error instanceof Error ? error.message : String(error);
         execution.errors.push({
           timestamp: new Date(),
           stage: 'input',
-          error: `Failed to load input ${input.name}: ${error.message}`,
+          error: `Failed to load input ${input.name}: ${errMsg}`,
         });
 
         if (input.required) {
@@ -227,7 +228,7 @@ export class DataPipelineManager extends EventEmitter {
             execution,
             'warn',
             'input',
-            `Using default value for ${input.name}: ${error.message}`
+            `Using default value for ${input.name}: ${errMsg}`
           );
         }
       }
@@ -241,9 +242,9 @@ export class DataPipelineManager extends EventEmitter {
    */
   private async loadFromSource(
     input: DataInput,
-    inputs: Record<string, any>,
-    context?: any
-  ): Promise<any> {
+    inputs: Record<string, unknown>,
+    context?: Record<string, unknown>
+  ): Promise<unknown> {
     switch (input.source.type) {
       case 'variable':
         return (
@@ -274,7 +275,7 @@ export class DataPipelineManager extends EventEmitter {
   /**
    * Load data from file
    */
-  private async loadFromFile(config: any): Promise<any> {
+  private async loadFromFile(config: any): Promise<unknown> {
     const filePath = config.path;
     const format = config.format || path.extname(filePath).toLowerCase();
 
@@ -301,7 +302,7 @@ export class DataPipelineManager extends EventEmitter {
   /**
    * Load data from API
    */
-  private async loadFromApi(config: any): Promise<any> {
+  private async loadFromApi(config: any): Promise<unknown> {
     const response = await fetch(config.url, {
       method: config.method || 'GET',
       headers: config.headers || {},
@@ -326,7 +327,7 @@ export class DataPipelineManager extends EventEmitter {
   /**
    * Load data from database
    */
-  private async loadFromDatabase(config: any): Promise<any> {
+  private async loadFromDatabase(config: any): Promise<unknown> {
     const connector = this.dataConnectors.get(config.connector);
     if (!connector) {
       throw new Error(`Database connector not found: ${config.connector}`);
@@ -340,9 +341,9 @@ export class DataPipelineManager extends EventEmitter {
    */
   private async validateData(
     pipeline: DataFlowDefinition,
-    data: Record<string, any>,
+    data: Record<string, unknown>,
     execution: DataPipelineExecution
-  ): Promise<Record<string, any>> {
+  ): Promise<Record<string, unknown>> {
     if (!pipeline.validations || pipeline.validations.length === 0) {
       return data;
     }
@@ -400,12 +401,12 @@ export class DataPipelineManager extends EventEmitter {
         }
 
         execution.metrics.recordsValidated++;
-      } catch (error: any) {
+      } catch (error: unknown) {
         validationErrors++;
         execution.errors.push({
           timestamp: new Date(),
           stage: 'validation',
-          error: `Validation error for ${validation.field}: ${error.message}`,
+          error: `Validation error for ${validation.field}: ${error instanceof Error ? error.message : String(error)}`,
         });
       }
     }
@@ -430,7 +431,7 @@ export class DataPipelineManager extends EventEmitter {
    * Validate a single value against rules
    */
   private async validateValue(
-    value: any,
+    value: unknown,
     rules: ValidationRule[],
     execution: DataPipelineExecution
   ): Promise<boolean> {
@@ -452,7 +453,7 @@ export class DataPipelineManager extends EventEmitter {
   /**
    * Apply a single validation rule
    */
-  private applyValidationRule(value: any, rule: ValidationRule): boolean {
+  private applyValidationRule(value: unknown, rule: ValidationRule): boolean {
     switch (rule.type) {
       case 'required':
         return value !== undefined && value !== null && value !== '';
@@ -488,9 +489,9 @@ export class DataPipelineManager extends EventEmitter {
    */
   private async transformData(
     pipeline: DataFlowDefinition,
-    data: Record<string, any>,
+    data: Record<string, unknown>,
     execution: DataPipelineExecution
-  ): Promise<Record<string, any>> {
+  ): Promise<Record<string, unknown>> {
     if (!pipeline.transformations || pipeline.transformations.length === 0) {
       return data;
     }
@@ -519,11 +520,11 @@ export class DataPipelineManager extends EventEmitter {
           'transformation',
           `Applied transformation: ${transformation.type} -> ${transformation.output}`
         );
-      } catch (error: any) {
+      } catch (error: unknown) {
         execution.errors.push({
           timestamp: new Date(),
           stage: 'transformation',
-          error: `Transformation failed (${transformation.id}): ${error.message}`,
+          error: `Transformation failed (${transformation.id}): ${error instanceof Error ? error.message : String(error)}`,
           data: transformation,
         });
         throw error;
@@ -538,26 +539,26 @@ export class DataPipelineManager extends EventEmitter {
    */
   private async applyTransformation(
     transformation: DataTransformation,
-    data: Record<string, any>,
+    data: Record<string, unknown>,
     execution: DataPipelineExecution
-  ): Promise<Record<string, any>> {
+  ): Promise<Record<string, unknown>> {
     const inputData = transformation.input.map((inputName) =>
       this.getNestedValue(data, inputName)
     );
 
-    let result: any;
+    let result: unknown;
 
     switch (transformation.type) {
       case 'map':
         result = await this.applyMapTransformation(
-          inputData[0],
+          inputData[0] as any[],
           transformation.config
         );
         break;
 
       case 'filter':
         result = await this.applyFilterTransformation(
-          inputData[0],
+          inputData[0] as any[],
           transformation.config
         );
         execution.metrics.recordsFiltered += Array.isArray(inputData[0])
@@ -567,14 +568,14 @@ export class DataPipelineManager extends EventEmitter {
 
       case 'reduce':
         result = await this.applyReduceTransformation(
-          inputData[0],
+          inputData[0] as any[],
           transformation.config
         );
         break;
 
       case 'merge':
         result = await this.applyMergeTransformation(
-          inputData,
+          inputData as unknown[],
           transformation.config
         );
         break;
@@ -636,9 +637,9 @@ export class DataPipelineManager extends EventEmitter {
    */
   private async saveOutputData(
     pipeline: DataFlowDefinition,
-    data: Record<string, any>,
+    data: Record<string, unknown>,
     execution: DataPipelineExecution,
-    context?: any
+    context?: Record<string, unknown>
   ): Promise<void> {
     if (!pipeline.outputs || pipeline.outputs.length === 0) {
       execution.outputs = data;
@@ -665,11 +666,11 @@ export class DataPipelineManager extends EventEmitter {
           'output',
           `Saved output: ${output.name}`
         );
-      } catch (error: any) {
+      } catch (error: unknown) {
         execution.errors.push({
           timestamp: new Date(),
           stage: 'output',
-          error: `Failed to save output ${output.name}: ${error.message}`,
+          error: `Failed to save output ${output.name}: ${error instanceof Error ? error.message : String(error)}`,
         });
         throw error;
       }
@@ -681,8 +682,8 @@ export class DataPipelineManager extends EventEmitter {
    */
   private async saveToDestination(
     output: DataOutput,
-    data: any,
-    context?: any
+    data: unknown,
+    context?: Record<string, unknown>
   ): Promise<void> {
     switch (output.destination.type) {
       case 'variable':
@@ -744,7 +745,7 @@ export class DataPipelineManager extends EventEmitter {
   private async applyReduceTransformation(
     data: any[],
     config: any
-  ): Promise<any> {
+  ): Promise<unknown> {
     if (!Array.isArray(data)) {
       throw new Error('Reduce transformation requires array input');
     }
@@ -764,9 +765,9 @@ export class DataPipelineManager extends EventEmitter {
   }
 
   private async applyMergeTransformation(
-    dataArrays: any[],
+    dataArrays: unknown[],
     config: any
-  ): Promise<any> {
+  ): Promise<unknown> {
     if (config.strategy === 'concat' && dataArrays.every(Array.isArray)) {
       return dataArrays.flat();
     } else if (config.strategy === 'object') {
@@ -777,9 +778,9 @@ export class DataPipelineManager extends EventEmitter {
   }
 
   private async applySplitTransformation(
-    data: any,
+    data: unknown,
     config: any
-  ): Promise<any[]> {
+  ): Promise<unknown[]> {
     if (typeof data === 'string') {
       return data.split(config.delimiter || '\n');
     } else if (Array.isArray(data)) {
@@ -794,38 +795,38 @@ export class DataPipelineManager extends EventEmitter {
   }
 
   private async applyValidateTransformation(
-    data: any,
+    data: unknown,
     config: any
-  ): Promise<any> {
+  ): Promise<unknown> {
     // Re-validate data with additional rules
     return data; // Implement validation logic
   }
 
   private async applyFormatTransformation(
-    data: any,
+    data: unknown,
     config: any
-  ): Promise<any> {
+  ): Promise<unknown> {
     if (config.type === 'json') {
       return JSON.stringify(data, null, config.indent || 2);
     } else if (config.type === 'csv') {
-      return this.formatAsCsv(data, config.options || {});
+      return this.formatAsCsv(data as unknown[], config.options || {});
     } else if (config.type === 'template') {
-      return this.applyTemplate(data, config.template);
+      return this.applyTemplate(data as Record<string, unknown>, config.template);
     }
     return data;
   }
 
   private async applyEncryptTransformation(
-    data: any,
+    data: unknown,
     config: any
-  ): Promise<any> {
+  ): Promise<unknown> {
     // Implement encryption logic
     return data; // Placeholder
   }
 
   // File I/O helpers
   private async saveToFile(
-    data: any,
+    data: unknown,
     config: any,
     format?: string
   ): Promise<void> {
@@ -834,7 +835,7 @@ export class DataPipelineManager extends EventEmitter {
     if (format === 'json' || config.format === 'json') {
       content = JSON.stringify(data, null, 2);
     } else if (format === 'csv' || config.format === 'csv') {
-      content = this.formatAsCsv(data, config.csvOptions || {});
+      content = this.formatAsCsv(data as unknown[], config.csvOptions || {});
     } else if (format === 'txt' || config.format === 'txt') {
       content = Array.isArray(data) ? data.join('\n') : String(data);
     } else {
@@ -844,7 +845,7 @@ export class DataPipelineManager extends EventEmitter {
     await fs.writeFile(config.path, content, config.encoding || 'utf8');
   }
 
-  private async saveToApi(data: any, config: any): Promise<void> {
+  private async saveToApi(data: unknown, config: any): Promise<void> {
     const response = await fetch(config.url, {
       method: config.method || 'POST',
       headers: { 'Content-Type': 'application/json', ...config.headers },
@@ -856,7 +857,7 @@ export class DataPipelineManager extends EventEmitter {
     }
   }
 
-  private async saveToDatabase(data: any, config: any): Promise<void> {
+  private async saveToDatabase(data: unknown, config: any): Promise<void> {
     const connector = this.dataConnectors.get(config.connector);
     if (!connector) {
       throw new Error(`Database connector not found: ${config.connector}`);
@@ -865,7 +866,7 @@ export class DataPipelineManager extends EventEmitter {
     await connector.insert(config.table, data);
   }
 
-  private async sendNotification(data: any, config: any): Promise<void> {
+  private async sendNotification(data: unknown, config: any): Promise<void> {
     this.emit('notification', {
       type: config.type || 'info',
       message: config.message || 'Data pipeline notification',
@@ -874,17 +875,17 @@ export class DataPipelineManager extends EventEmitter {
   }
 
   // Utility methods
-  private getNestedValue(obj: any, path: string): any {
-    return path.split('.').reduce((current, key) => current?.[key], obj);
+  private getNestedValue(obj: Record<string, unknown>, path: string): unknown {
+    return path.split('.').reduce((current: any, key) => current?.[key], obj);
   }
 
-  private setNestedValue(obj: any, path: string, value: any): any {
+  private setNestedValue(obj: Record<string, unknown>, path: string, value: unknown): Record<string, unknown> {
     const keys = path.split('.');
     const lastKey = keys.pop()!;
-    const target = keys.reduce((current, key) => {
+    const target = keys.reduce<Record<string, any>>((current, key) => {
       if (!(key in current)) current[key] = {};
       return current[key];
-    }, obj);
+    }, obj as Record<string, any>);
     target[lastKey] = value;
     return obj;
   }
@@ -923,9 +924,9 @@ export class DataPipelineManager extends EventEmitter {
     }
   }
 
-  private parseCsv(content: string, options: any): any[] {
+  private parseCsv(content: string, options: Record<string, unknown>): unknown[] {
     const lines = content.split('\n').filter((line) => line.trim());
-    const delimiter = options.delimiter || ',';
+    const delimiter = String(options.delimiter || ',');
     const hasHeader = options.hasHeader !== false;
 
     if (lines.length === 0) return [];
@@ -936,7 +937,7 @@ export class DataPipelineManager extends EventEmitter {
     return dataLines.map((line, index) => {
       const values = line.split(delimiter);
       if (headers) {
-        const obj: any = {};
+        const obj: Record<string, string> = {};
         headers.forEach((header, i) => {
           obj[header.trim()] = values[i]?.trim() || '';
         });
@@ -947,13 +948,13 @@ export class DataPipelineManager extends EventEmitter {
     });
   }
 
-  private formatAsCsv(data: any[], options: any): string {
+  private formatAsCsv(data: unknown[], options: Record<string, unknown>): string {
     if (!Array.isArray(data) || data.length === 0) return '';
 
-    const delimiter = options.delimiter || ',';
+    const delimiter = String(options.delimiter || ',');
     const includeHeader = options.includeHeader !== false;
 
-    const firstItem = data[0];
+    const firstItem = data[0] as Record<string, unknown>;
     const headers = Object.keys(firstItem);
 
     let csv = '';
@@ -962,8 +963,9 @@ export class DataPipelineManager extends EventEmitter {
     }
 
     data.forEach((item) => {
+      const record = item as Record<string, unknown>;
       const values = headers.map((header) => {
-        const value = item[header];
+        const value = record[header];
         return typeof value === 'string' && value.includes(delimiter)
           ? `"${value}"`
           : String(value || '');
@@ -974,12 +976,12 @@ export class DataPipelineManager extends EventEmitter {
     return csv;
   }
 
-  private parseXml(content: string): any {
+  private parseXml(content: string): Record<string, string> {
     // Simple XML parsing - in production, use a proper XML parser
     return { xml: content };
   }
 
-  private applyTemplate(data: any, template: string): string {
+  private applyTemplate(data: Record<string, unknown>, template: string): string {
     return template.replace(/\{\{(\w+(?:\.\w+)*)\}\}/g, (match, path) => {
       const value = this.getNestedValue(data, path);
       return value !== undefined ? String(value) : match;
@@ -1050,10 +1052,10 @@ export class DataPipelineManager extends EventEmitter {
 export interface DataConnector {
   name: string;
   type: string;
-  query(sql: string, parameters?: any[]): Promise<any>;
-  insert(table: string, data: any): Promise<void>;
-  update(table: string, data: any, conditions: any): Promise<void>;
-  delete(table: string, conditions: any): Promise<void>;
+  query(sql: string, parameters?: unknown[]): Promise<unknown>;
+  insert(table: string, data: unknown): Promise<void>;
+  update(table: string, data: unknown, conditions: Record<string, unknown>): Promise<void>;
+  delete(table: string, conditions: Record<string, unknown>): Promise<void>;
   connect(): Promise<void>;
   disconnect(): Promise<void>;
 }
@@ -1061,8 +1063,8 @@ export interface DataConnector {
 // Interface for transformation functions
 export interface TransformationFunction {
   apply(
-    inputs: any[],
-    config: any,
+    inputs: unknown[],
+    config: Record<string, unknown>,
     execution: DataPipelineExecution
-  ): Promise<any>;
+  ): Promise<unknown>;
 }

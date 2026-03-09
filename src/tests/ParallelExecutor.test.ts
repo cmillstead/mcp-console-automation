@@ -4,6 +4,7 @@
 
 import { ParallelExecutor } from '../testing/ParallelExecutor.js';
 import {
+  Assertion,
   TestDefinition,
   ParallelExecutionConfig,
 } from '../types/test-framework.js';
@@ -19,7 +20,7 @@ describe('ParallelExecutor', () => {
     it('should execute tests in parallel', async () => {
       const tests: TestDefinition[] = Array.from({ length: 10 }, (_, i) => ({
         name: `test-${i}`,
-        assertions: [],
+        assertions: [] as Assertion[],
         timeout: 100,
         retry: 0,
       }));
@@ -42,7 +43,7 @@ describe('ParallelExecutor', () => {
     it('should demonstrate speedup over sequential execution', async () => {
       const tests: TestDefinition[] = Array.from({ length: 8 }, (_, i) => ({
         name: `test-${i}`,
-        assertions: [],
+        assertions: [] as Assertion[],
         timeout: 200,
         retry: 0,
       }));
@@ -77,9 +78,9 @@ describe('ParallelExecutor', () => {
   describe('Fail-Fast Mode', () => {
     it('should stop on first failure in fail-fast mode', async () => {
       const tests: TestDefinition[] = [
-        { name: 'test-1', assertions: [], timeout: 100, retry: 0 },
-        { name: 'test-2', assertions: [], timeout: 100, retry: 0, skip: false },
-        { name: 'test-3', assertions: [], timeout: 100, retry: 0 },
+        { name: 'test-1', assertions: [] as Assertion[], timeout: 100, retry: 0 },
+        { name: 'test-2', assertions: [] as Assertion[], timeout: 100, retry: 0, skip: false },
+        { name: 'test-3', assertions: [] as Assertion[], timeout: 100, retry: 0 },
       ];
 
       const config: ParallelExecutionConfig = {
@@ -102,7 +103,7 @@ describe('ParallelExecutor', () => {
     it('should isolate tests in separate workers', async () => {
       const tests: TestDefinition[] = Array.from({ length: 5 }, (_, i) => ({
         name: `isolated-test-${i}`,
-        assertions: [],
+        assertions: [] as Assertion[],
         timeout: 100,
         retry: 0,
       }));
@@ -146,9 +147,9 @@ describe('ParallelExecutor', () => {
   describe('Skipped Tests', () => {
     it('should skip tests marked as skip', async () => {
       const tests: TestDefinition[] = [
-        { name: 'test-1', assertions: [], timeout: 100, retry: 0 },
-        { name: 'test-2', assertions: [], timeout: 100, retry: 0, skip: true },
-        { name: 'test-3', assertions: [], timeout: 100, retry: 0 },
+        { name: 'test-1', assertions: [] as Assertion[], timeout: 100, retry: 0 },
+        { name: 'test-2', assertions: [] as Assertion[], timeout: 100, retry: 0, skip: true },
+        { name: 'test-3', assertions: [] as Assertion[], timeout: 100, retry: 0 },
       ];
 
       const config: ParallelExecutionConfig = {
@@ -171,7 +172,7 @@ describe('ParallelExecutor', () => {
     it('should provide worker pool statistics', async () => {
       const tests: TestDefinition[] = Array.from({ length: 6 }, (_, i) => ({
         name: `test-${i}`,
-        assertions: [],
+        assertions: [] as Assertion[],
         timeout: 100,
         retry: 0,
       }));
@@ -200,7 +201,7 @@ describe('ParallelExecutor', () => {
     it('should collect execution metrics', async () => {
       const tests: TestDefinition[] = Array.from({ length: 3 }, (_, i) => ({
         name: `metric-test-${i}`,
-        assertions: [],
+        assertions: [] as Assertion[],
         timeout: 100,
         retry: 0,
       }));

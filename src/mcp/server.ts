@@ -14,8 +14,11 @@ import { SessionManager } from '../core/SessionManager.js';
 import {
   SessionOptions,
   ConsoleSession,
+  ConsoleType,
+  SSHConnectionOptions,
   BackgroundJobOptions,
 } from '../types/index.js';
+import { ConnectionProfile, ApplicationProfile } from '../config/ConfigManager.js';
 import { Logger } from '../utils/logger.js';
 import { SSHBridge } from './SSHBridge.js';
 import { fileURLToPath } from 'url';
@@ -31,7 +34,7 @@ import { Assertion, SessionSnapshot } from '../types/test-framework.js';
 // Debug logging to file (only when MCP_DEBUG env var is set)
 const DEBUG_ENABLED = !!process.env.MCP_DEBUG;
 const DEBUG_LOG_FILE = DEBUG_ENABLED ? path.join(process.cwd(), 'mcp-debug.log') : '';
-function debugLog(...args: any[]) {
+function debugLog(...args: unknown[]) {
   if (!DEBUG_ENABLED) return;
   const timestamp = new Date().toISOString();
   const message = `[${timestamp}] ${args.map((a) => (typeof a === 'object' ? JSON.stringify(a, null, 2) : String(a))).join(' ')}\n`;
@@ -52,7 +55,7 @@ export class ConsoleAutomationServer {
   private sessionManager: SessionManager;
   private sshBridge: SSHBridge;
   private logger: Logger;
-  private sessionRecoveryMap: Map<string, any> = new Map();
+  private sessionRecoveryMap: Map<string, Record<string, unknown>> = new Map();
   private keepAliveInterval?: NodeJS.Timeout;
   private healthCheckInterval?: NodeJS.Timeout;
   private connectionState: 'connected' | 'disconnected' | 'reconnecting' =
@@ -129,56 +132,56 @@ export class ConsoleAutomationServer {
 
         switch (name) {
           case 'console_create_session':
-            return await this.handleCreateSession(args as any);
+            return await this.handleCreateSession(args as never);
 
           case 'console_send_input':
-            return await this.handleSendInput(args as any);
+            return await this.handleSendInput(args as never);
 
           case 'console_send_key':
-            return await this.handleSendKey(args as any);
+            return await this.handleSendKey(args as never);
 
           case 'console_get_output':
-            return await this.handleGetOutput(args as any);
+            return await this.handleGetOutput(args as never);
 
           case 'console_get_stream':
-            return await this.handleGetStream(args as any);
+            return await this.handleGetStream(args as never);
 
           case 'console_wait_for_output':
-            return await this.handleWaitForOutput(args as any);
+            return await this.handleWaitForOutput(args as never);
 
           case 'console_stop_session':
-            return await this.handleStopSession(args as any);
+            return await this.handleStopSession(args as never);
 
           case 'console_list_sessions':
             return await this.handleListSessions();
 
           case 'console_cleanup_sessions':
-            return await this.handleCleanupSessions(args as any);
+            return await this.handleCleanupSessions(args as never);
 
           case 'console_execute_command':
-            return await this.handleExecuteCommand(args as any);
+            return await this.handleExecuteCommand(args as never);
 
           case 'console_detect_errors':
-            return await this.handleDetectErrors(args as any);
+            return await this.handleDetectErrors(args as never);
 
           case 'console_get_resource_usage':
             return await this.handleGetResourceUsage();
 
           case 'console_clear_output':
-            return await this.handleClearOutput(args as any);
+            return await this.handleClearOutput(args as never);
 
           case 'console_get_session_state':
-            return await this.handleGetSessionState(args as any);
+            return await this.handleGetSessionState(args as never);
 
           case 'console_get_command_history':
-            return await this.handleGetCommandHistory(args as any);
+            return await this.handleGetCommandHistory(args as never);
 
           // Monitoring tools
           case 'console_get_system_metrics':
             return await this.handleGetSystemMetrics();
 
           case 'console_get_session_metrics':
-            return await this.handleGetSessionMetrics(args as any);
+            return await this.handleGetSessionMetrics(args as never);
 
           case 'console_get_alerts':
             return await this.handleGetAlerts();
@@ -187,70 +190,70 @@ export class ConsoleAutomationServer {
             return await this.handleGetMonitoringDashboard();
 
           case 'console_start_monitoring':
-            return await this.handleStartMonitoring(args as any);
+            return await this.handleStartMonitoring(args as never);
 
           case 'console_stop_monitoring':
-            return await this.handleStopMonitoring(args as any);
+            return await this.handleStopMonitoring(args as never);
 
           // Profile management tools
           case 'console_save_profile':
-            return await this.handleSaveProfile(args as any);
+            return await this.handleSaveProfile(args as never);
 
           case 'console_list_profiles':
             return await this.handleListProfiles();
 
           case 'console_remove_profile':
-            return await this.handleRemoveProfile(args as any);
+            return await this.handleRemoveProfile(args as never);
 
           case 'console_use_profile':
-            return await this.handleUseProfile(args as any);
+            return await this.handleUseProfile(args as never);
 
           // Background job execution tools
           case 'console_execute_async':
-            return await this.handleExecuteAsync(args as any);
+            return await this.handleExecuteAsync(args as never);
 
           case 'console_get_job_status':
-            return await this.handleGetJobStatus(args as any);
+            return await this.handleGetJobStatus(args as never);
 
           case 'console_get_job_output':
-            return await this.handleGetJobOutput(args as any);
+            return await this.handleGetJobOutput(args as never);
 
           case 'console_cancel_job':
-            return await this.handleCancelJob(args as any);
+            return await this.handleCancelJob(args as never);
 
           case 'console_list_jobs':
-            return await this.handleListJobs(args as any);
+            return await this.handleListJobs(args as never);
 
           case 'console_get_job_progress':
-            return await this.handleGetJobProgress(args as any);
+            return await this.handleGetJobProgress(args as never);
 
           case 'console_get_job_result':
-            return await this.handleGetJobResult(args as any);
+            return await this.handleGetJobResult(args as never);
 
           case 'console_get_job_metrics':
             return await this.handleGetJobMetrics();
 
           case 'console_cleanup_jobs':
-            return await this.handleCleanupJobs(args as any);
+            return await this.handleCleanupJobs(args as never);
 
           // Phase 2: Assertion Framework Tools
           case 'console_assert_output':
-            return await this.handleAssertOutput(args as any);
+            return await this.handleAssertOutput(args as never);
 
           case 'console_assert_exit_code':
-            return await this.handleAssertExitCode(args as any);
+            return await this.handleAssertExitCode(args as never);
 
           case 'console_assert_no_errors':
-            return await this.handleAssertNoErrors(args as any);
+            return await this.handleAssertNoErrors(args as never);
 
           case 'console_save_snapshot':
-            return await this.handleSaveSnapshot(args as any);
+            return await this.handleSaveSnapshot(args as never);
 
           case 'console_compare_snapshots':
-            return await this.handleCompareSnapshots(args as any);
+            return await this.handleCompareSnapshots(args as never);
 
           case 'console_assert_state':
-            return await this.handleAssertState(args as any);
+            return await this.handleAssertState(args as never);
 
           default:
             throw new McpError(
@@ -258,7 +261,7 @@ export class ConsoleAutomationServer {
               `Unknown tool: ${name}`
             );
         }
-      } catch (error: any) {
+      } catch (error: unknown) {
         // CRITICAL: Never log errors in MCP mode - only return properly formatted MCP errors
         // Logging would corrupt the stdio transport channel
 
@@ -268,24 +271,27 @@ export class ConsoleAutomationServer {
           throw error;
         }
 
-        if (error.code === 'ENOENT' || error.code === 'EACCES') {
+        const errObj = error instanceof Error ? error : new Error(String(error));
+        const errCode = (error as Record<string, unknown>)?.['code'];
+
+        if (errCode === 'ENOENT' || errCode === 'EACCES') {
           throw new McpError(
             ErrorCode.InvalidParams,
-            `File system error: ${error.message}`
+            `File system error: ${errObj.message}`
           );
         }
 
-        if (error.name === 'ValidationError' || error.name === 'TypeError') {
+        if (errObj.name === 'ValidationError' || errObj.name === 'TypeError') {
           throw new McpError(
             ErrorCode.InvalidParams,
-            `Validation error: ${error.message}`
+            `Validation error: ${errObj.message}`
           );
         }
 
-        if (error.code === 'TIMEOUT' || error.message.includes('timeout')) {
+        if (errCode === 'TIMEOUT' || errObj.message.includes('timeout')) {
           throw new McpError(
             ErrorCode.InternalError,
-            `Operation timeout: ${error.message}`
+            `Operation timeout: ${errObj.message}`
           );
         }
 
@@ -293,7 +299,7 @@ export class ConsoleAutomationServer {
         throw new McpError(
           ErrorCode.InternalError,
           process.env.NODE_ENV === 'development'
-            ? `Internal error: ${error.message}`
+            ? `Internal error: ${errObj.message}`
             : 'An internal error occurred'
         );
       }
@@ -1376,13 +1382,14 @@ export class ConsoleAutomationServer {
           } as TextContent,
         ],
       };
-    } catch (error: any) {
+    } catch (error: unknown) {
+      const errObj = error instanceof Error ? error : new Error(String(error));
       debugLog('[DEBUG] === ERROR in handleCreateSession ===');
       debugLog('[ERROR] Session creation failed:', error);
-      debugLog('[DEBUG] Error message:', error.message);
-      debugLog('[DEBUG] Error type:', error.constructor.name);
-      debugLog('[DEBUG] Error code:', (error as any).code);
-      debugLog('[DEBUG] Error stack:', error.stack);
+      debugLog('[DEBUG] Error message:', errObj.message);
+      debugLog('[DEBUG] Error type:', errObj.constructor.name);
+      debugLog('[DEBUG] Error code:', (error as Record<string, unknown>)?.['code']);
+      debugLog('[DEBUG] Error stack:', errObj.stack);
       debugLog('[DEBUG] Full error:', error);
 
       // Track errors
@@ -1396,7 +1403,7 @@ export class ConsoleAutomationServer {
 
       if (classification.canRecover) {
         debugLog('[DEBUG] Attempting recovery...');
-        this.handleRecoverableError(error);
+        this.handleRecoverableError(errObj);
       }
 
       if (error instanceof McpError) {
@@ -1406,7 +1413,7 @@ export class ConsoleAutomationServer {
       debugLog('[DEBUG] Throwing new McpError');
       throw new McpError(
         ErrorCode.InternalError,
-        `Session creation failed: ${error.message}`
+        `Session creation failed: ${errObj.message}`
       );
     }
   }
@@ -1471,7 +1478,13 @@ export class ConsoleAutomationServer {
     };
   }
 
-  private async handleGetOutput(args: any) {
+  private async handleGetOutput(args: {
+    sessionId: string;
+    limit?: number;
+    offset?: number;
+    continuationToken?: string;
+    [key: string]: unknown;
+  }) {
     const { sessionId, limit, offset, continuationToken, ...filterOptions } =
       args;
 
@@ -1713,8 +1726,8 @@ export class ConsoleAutomationServer {
           } as TextContent,
         ],
       };
-    } catch (error: any) {
-      throw new McpError(ErrorCode.InternalError, error.message);
+    } catch (error: unknown) {
+      throw new McpError(ErrorCode.InternalError, error instanceof Error ? error.message : String(error));
     }
   }
 
@@ -1820,14 +1833,14 @@ export class ConsoleAutomationServer {
 
             cleaned.push(session.id);
             cleanedCount++;
-          } catch (error: any) {
+          } catch (error: unknown) {
             errors.push(
-              `Failed to clean session ${session.id}: ${error.message}`
+              `Failed to clean session ${session.id}: ${error instanceof Error ? error.message : String(error)}`
             );
           }
         }
-      } catch (error: any) {
-        errors.push(`Error processing session ${session.id}: ${error.message}`);
+      } catch (error: unknown) {
+        errors.push(`Error processing session ${session.id}: ${error instanceof Error ? error.message : String(error)}`);
       }
     }
 
@@ -1860,8 +1873,8 @@ export class ConsoleAutomationServer {
     cwd?: string;
     env?: Record<string, string>;
     timeout?: number;
-    consoleType?: any;
-    sshOptions?: any;
+    consoleType?: ConsoleType;
+    sshOptions?: SSHConnectionOptions;
   }) {
     // If sessionId is provided, execute command in existing session
     if (args.sessionId) {
@@ -1939,14 +1952,14 @@ export class ConsoleAutomationServer {
             } as TextContent,
           ],
         };
-      } catch (error: any) {
+      } catch (error: unknown) {
         // Check if it's a timeout error and provide helpful guidance
-        let errorMessage = error.message;
+        const errorMessage = error instanceof Error ? error.message : String(error);
         let suggestion = '';
 
         if (
-          error.message.includes('timeout') ||
-          error.message.includes('timed out')
+          errorMessage.includes('timeout') ||
+          errorMessage.includes('timed out')
         ) {
           suggestion =
             '\n\nTip: This command timed out. For long-running commands, use console_create_session to create a persistent session, then use console_send_input and console_wait_for_output instead of console_execute_command. This allows better control over long-running processes.';
@@ -2012,14 +2025,14 @@ export class ConsoleAutomationServer {
           sshOptions: finalSSHOptions,
         }
       );
-    } catch (error: any) {
+    } catch (error: unknown) {
       // Check if it's a timeout error and provide helpful guidance
-      let errorMessage = error.message;
+      const errorMessage = error instanceof Error ? error.message : String(error);
       let suggestion = '';
 
       if (
-        error.message.includes('timeout') ||
-        error.message.includes('timed out')
+        errorMessage.includes('timeout') ||
+        errorMessage.includes('timed out')
       ) {
         suggestion =
           '\n\nTip: This command timed out. For long-running commands, use console_create_session to create a persistent session, then use console_send_input and console_wait_for_output instead of console_execute_command. This allows better control over long-running processes.';
@@ -2042,7 +2055,7 @@ export class ConsoleAutomationServer {
    */
   private detectConsoleTypeFromCommand(
     command: string,
-    sshOptions?: any
+    sshOptions?: SSHConnectionOptions
   ): 'cmd' | 'powershell' | 'pwsh' | 'bash' | 'zsh' | 'sh' | 'ssh' | 'auto' {
     // If SSH options are provided, it's definitely an SSH session
     if (sshOptions) {
@@ -2444,11 +2457,11 @@ export class ConsoleAutomationServer {
     };
   }
 
-  private async handleSaveProfile(args: any) {
+  private async handleSaveProfile(args: Record<string, unknown>) {
     const { profileType, name, ...profileData } = args;
 
     if (profileType === 'connection') {
-      const connectionProfile: any = {
+      const connectionProfile: Record<string, unknown> = {
         name,
         type: args.connectionType,
         isDefault: args.isDefault || false,
@@ -2462,7 +2475,7 @@ export class ConsoleAutomationServer {
       }
       // Add other connection types as needed
 
-      this.consoleManager.saveConnectionProfile(connectionProfile);
+      this.consoleManager.saveConnectionProfile(connectionProfile as unknown as ConnectionProfile);
 
       return {
         content: [
@@ -2473,7 +2486,7 @@ export class ConsoleAutomationServer {
         ],
       };
     } else if (profileType === 'application') {
-      const applicationProfile: any = {
+      const applicationProfile: Record<string, unknown> = {
         name,
         type: args.applicationType || 'custom',
         command: args.command,
@@ -2483,7 +2496,7 @@ export class ConsoleAutomationServer {
         dotnetOptions: args.dotnetOptions,
       };
 
-      this.consoleManager.saveApplicationProfile(applicationProfile);
+      this.consoleManager.saveApplicationProfile(applicationProfile as unknown as ApplicationProfile);
 
       return {
         content: [
@@ -2500,7 +2513,7 @@ export class ConsoleAutomationServer {
 
   private async handleListProfiles() {
     const connectionProfiles = this.consoleManager.listConnectionProfiles();
-    const configManager = (this.consoleManager as any).configManager;
+    const configManager = (this.consoleManager as unknown as { configManager: { config: Record<string, unknown>; removeConnectionProfile: (name: string) => boolean } }).configManager;
     const applicationProfiles = configManager.config.applicationProfiles;
 
     return {
@@ -2525,7 +2538,7 @@ export class ConsoleAutomationServer {
     profileType: string;
     name: string;
   }) {
-    const configManager = (this.consoleManager as any).configManager;
+    const configManager = (this.consoleManager as unknown as { configManager: { config: Record<string, unknown>; removeConnectionProfile: (name: string) => boolean } }).configManager;
 
     if (args.profileType === 'connection') {
       const removed = configManager.removeConnectionProfile(args.name);
@@ -2550,7 +2563,7 @@ export class ConsoleAutomationServer {
     command?: string;
     args?: string[];
     cwd?: string;
-    env?: any;
+    env?: Record<string, string>;
   }) {
     console.error('[URGENT] handleUseProfile called with:', args);
     this.logger.info(
@@ -2673,7 +2686,7 @@ export class ConsoleAutomationServer {
           cwd: args.cwd,
           env: args.env,
           profileName: args.profileName,
-        } as any;
+        };
 
         debugLog('[DEBUG] Creating session with options:', sessionOptions);
 
@@ -2688,7 +2701,7 @@ export class ConsoleAutomationServer {
           this.sessionRecoveryMap.set(sessionId, {
             profileName: args.profileName,
             type: 'profile',
-          } as any);
+          });
         }
 
         return {
@@ -2709,7 +2722,7 @@ export class ConsoleAutomationServer {
           ],
         };
       }
-    } catch (error: any) {
+    } catch (error: unknown) {
       debugLog('[ERROR] Profile usage failed:', error);
       throw error;
     }
@@ -2725,7 +2738,7 @@ export class ConsoleAutomationServer {
     timeout?: number;
     priority?: number;
     captureOutput?: boolean;
-    metadata?: any;
+    metadata?: Record<string, unknown>;
   }) {
     try {
       const result = await this.sessionManager.executeBackgroundJob({
@@ -2753,7 +2766,7 @@ export class ConsoleAutomationServer {
           } as TextContent,
         ],
       };
-    } catch (error: any) {
+    } catch (error: unknown) {
       return {
         content: [
           {
@@ -2761,7 +2774,7 @@ export class ConsoleAutomationServer {
             text: JSON.stringify(
               {
                 success: false,
-                error: error.message,
+                error: error instanceof Error ? error.message : String(error),
                 command: args.command,
                 sessionId: args.sessionId,
               },
@@ -2804,7 +2817,7 @@ export class ConsoleAutomationServer {
           } as TextContent,
         ],
       };
-    } catch (error: any) {
+    } catch (error: unknown) {
       return {
         content: [
           {
@@ -2812,7 +2825,7 @@ export class ConsoleAutomationServer {
             text: JSON.stringify(
               {
                 success: false,
-                error: error.message,
+                error: error instanceof Error ? error.message : String(error),
                 jobId: args.jobId,
               },
               null,
@@ -2833,7 +2846,7 @@ export class ConsoleAutomationServer {
 
       const response = {
         jobId: args.jobId,
-        output: output.map((o) => ({
+        output: output.map((o: { type: string; data: string; timestamp: Date; sequence: number }) => ({
           type: o.type,
           data: o.data,
           timestamp: o.timestamp,
@@ -2851,7 +2864,7 @@ export class ConsoleAutomationServer {
           } as TextContent,
         ],
       };
-    } catch (error: any) {
+    } catch (error: unknown) {
       return {
         content: [
           {
@@ -2859,7 +2872,7 @@ export class ConsoleAutomationServer {
             text: JSON.stringify(
               {
                 success: false,
-                error: error.message,
+                error: error instanceof Error ? error.message : String(error),
                 jobId: args.jobId,
               },
               null,
@@ -2891,7 +2904,7 @@ export class ConsoleAutomationServer {
           } as TextContent,
         ],
       };
-    } catch (error: any) {
+    } catch (error: unknown) {
       return {
         content: [
           {
@@ -2899,7 +2912,7 @@ export class ConsoleAutomationServer {
             text: JSON.stringify(
               {
                 success: false,
-                error: error.message,
+                error: error instanceof Error ? error.message : String(error),
                 jobId: args.jobId,
               },
               null,
@@ -2947,7 +2960,7 @@ export class ConsoleAutomationServer {
           } as TextContent,
         ],
       };
-    } catch (error: any) {
+    } catch (error: unknown) {
       return {
         content: [
           {
@@ -2955,7 +2968,7 @@ export class ConsoleAutomationServer {
             text: JSON.stringify(
               {
                 success: false,
-                error: error.message,
+                error: error instanceof Error ? error.message : String(error),
                 sessionId: args.sessionId,
               },
               null,
@@ -2985,7 +2998,7 @@ export class ConsoleAutomationServer {
           } as TextContent,
         ],
       };
-    } catch (error: any) {
+    } catch (error: unknown) {
       return {
         content: [
           {
@@ -2993,7 +3006,7 @@ export class ConsoleAutomationServer {
             text: JSON.stringify(
               {
                 success: false,
-                error: error.message,
+                error: error instanceof Error ? error.message : String(error),
                 jobId: args.jobId,
               },
               null,
@@ -3017,7 +3030,7 @@ export class ConsoleAutomationServer {
           } as TextContent,
         ],
       };
-    } catch (error: any) {
+    } catch (error: unknown) {
       return {
         content: [
           {
@@ -3025,7 +3038,7 @@ export class ConsoleAutomationServer {
             text: JSON.stringify(
               {
                 success: false,
-                error: error.message,
+                error: error instanceof Error ? error.message : String(error),
                 jobId: args.jobId,
               },
               null,
@@ -3056,7 +3069,7 @@ export class ConsoleAutomationServer {
           } as TextContent,
         ],
       };
-    } catch (error: any) {
+    } catch (error: unknown) {
       return {
         content: [
           {
@@ -3064,7 +3077,7 @@ export class ConsoleAutomationServer {
             text: JSON.stringify(
               {
                 success: false,
-                error: error.message,
+                error: error instanceof Error ? error.message : String(error),
               },
               null,
               2
@@ -3100,7 +3113,7 @@ export class ConsoleAutomationServer {
           } as TextContent,
         ],
       };
-    } catch (error: any) {
+    } catch (error: unknown) {
       return {
         content: [
           {
@@ -3108,7 +3121,7 @@ export class ConsoleAutomationServer {
             text: JSON.stringify(
               {
                 success: false,
-                error: error.message,
+                error: error instanceof Error ? error.message : String(error),
               },
               null,
               2
@@ -3138,8 +3151,8 @@ export class ConsoleAutomationServer {
       const output = outputs.map((o) => o.data).join('');
       const assertionType = args.type || 'output_contains';
 
-      const assertion: any = {
-        type: assertionType,
+      const assertion: Assertion = {
+        type: assertionType as Assertion['type'],
         expected: args.expected,
         actual: output,
       };
@@ -3167,7 +3180,7 @@ export class ConsoleAutomationServer {
           } as TextContent,
         ],
       };
-    } catch (error: any) {
+    } catch (error: unknown) {
       return {
         content: [
           {
@@ -3175,7 +3188,7 @@ export class ConsoleAutomationServer {
             text: JSON.stringify(
               {
                 success: false,
-                error: error.message,
+                error: error instanceof Error ? error.message : String(error),
               },
               null,
               2
@@ -3198,7 +3211,7 @@ export class ConsoleAutomationServer {
 
       const exitCode = session.exitCode;
 
-      const assertion: any = {
+      const assertion: Assertion = {
         type: 'exit_code',
         expected: args.expected,
         actual: exitCode,
@@ -3223,7 +3236,7 @@ export class ConsoleAutomationServer {
           } as TextContent,
         ],
       };
-    } catch (error: any) {
+    } catch (error: unknown) {
       return {
         content: [
           {
@@ -3231,7 +3244,7 @@ export class ConsoleAutomationServer {
             text: JSON.stringify(
               {
                 success: false,
-                error: error.message,
+                error: error instanceof Error ? error.message : String(error),
               },
               null,
               2
@@ -3252,7 +3265,7 @@ export class ConsoleAutomationServer {
       const outputs = this.consoleManager.getOutput(args.sessionId);
       const output = outputs.map((o) => o.data).join('');
 
-      const assertion: any = {
+      const assertion: Assertion = {
         type: 'no_errors',
         expected: null,
         actual: output,
@@ -3275,7 +3288,7 @@ export class ConsoleAutomationServer {
           } as TextContent,
         ],
       };
-    } catch (error: any) {
+    } catch (error: unknown) {
       return {
         content: [
           {
@@ -3283,7 +3296,7 @@ export class ConsoleAutomationServer {
             text: JSON.stringify(
               {
                 success: false,
-                error: error.message,
+                error: error instanceof Error ? error.message : String(error),
               },
               null,
               2
@@ -3296,7 +3309,7 @@ export class ConsoleAutomationServer {
 
   private async handleSaveSnapshot(args: {
     sessionId: string;
-    metadata?: Record<string, any>;
+    metadata?: Record<string, unknown>;
   }) {
     try {
       const session = this.consoleManager.getSession(args.sessionId);
@@ -3338,7 +3351,7 @@ export class ConsoleAutomationServer {
           } as TextContent,
         ],
       };
-    } catch (error: any) {
+    } catch (error: unknown) {
       return {
         content: [
           {
@@ -3346,7 +3359,7 @@ export class ConsoleAutomationServer {
             text: JSON.stringify(
               {
                 success: false,
-                error: error.message,
+                error: error instanceof Error ? error.message : String(error),
               },
               null,
               2
@@ -3389,7 +3402,7 @@ export class ConsoleAutomationServer {
           } as TextContent,
         ],
       };
-    } catch (error: any) {
+    } catch (error: unknown) {
       return {
         content: [
           {
@@ -3397,7 +3410,7 @@ export class ConsoleAutomationServer {
             text: JSON.stringify(
               {
                 success: false,
-                error: error.message,
+                error: error instanceof Error ? error.message : String(error),
               },
               null,
               2
@@ -3408,7 +3421,7 @@ export class ConsoleAutomationServer {
     }
   }
 
-  private async handleAssertState(args: { sessionId: string; expected: any }) {
+  private async handleAssertState(args: { sessionId: string; expected: unknown }) {
     try {
       const session = this.consoleManager.getSession(args.sessionId);
       if (!session) {
@@ -3417,7 +3430,7 @@ export class ConsoleAutomationServer {
 
       const state = this.sessionManager.getSession(args.sessionId);
 
-      const assertion: any = {
+      const assertion: Assertion = {
         type: 'state_equals',
         expected: args.expected,
         actual: state,
@@ -3441,7 +3454,7 @@ export class ConsoleAutomationServer {
           } as TextContent,
         ],
       };
-    } catch (error: any) {
+    } catch (error: unknown) {
       return {
         content: [
           {
@@ -3449,7 +3462,7 @@ export class ConsoleAutomationServer {
             text: JSON.stringify(
               {
                 success: false,
-                error: error.message,
+                error: error instanceof Error ? error.message : String(error),
               },
               null,
               2
@@ -3502,7 +3515,7 @@ export class ConsoleAutomationServer {
       debugLog('[DEBUG] UNCAUGHT EXCEPTION CAUGHT!');
       debugLog('[DEBUG] Error message:', error.message);
       debugLog('[DEBUG] Error stack:', error.stack);
-      debugLog('[DEBUG] Error code:', (error as any).code);
+      debugLog('[DEBUG] Error code:', (error as unknown as Record<string, unknown>).code);
       debugLog('[DEBUG] Error details:', error);
       debugLog('[DEBUG] ============================================');
 
@@ -3542,7 +3555,7 @@ export class ConsoleAutomationServer {
       debugLog('[DEBUG] ============================================');
       debugLog('[DEBUG] UNHANDLED REJECTION CAUGHT!');
       debugLog('[DEBUG] Reason:', reason);
-      debugLog('[DEBUG] Stack:', (reason as any)?.stack);
+      debugLog('[DEBUG] Stack:', reason instanceof Error ? reason.stack : undefined);
       debugLog('[DEBUG] ============================================');
       this.logger.warn('Unhandled rejection isolated:', reason);
       this.handleRecoverableError(new Error(String(reason)));
@@ -3725,7 +3738,7 @@ export class ConsoleAutomationServer {
       debugLog('[SHUTDOWN] SessionManager destroyed');
 
       debugLog('[SHUTDOWN] Graceful shutdown complete');
-    } catch (error: any) {
+    } catch (error: unknown) {
       debugLog('[SHUTDOWN ERROR]', error);
       this.logger.error('Error during shutdown:', error);
     }
@@ -3733,15 +3746,17 @@ export class ConsoleAutomationServer {
     process.exit(0);
   }
 
-  private classifyError(error: any): ErrorClassification {
+  private classifyError(error: unknown): ErrorClassification {
+    const errMsg = error instanceof Error ? error.message : String(error);
+    const errRecord = error as Record<string, unknown>;
     // SSH authentication errors
     if (
-      error.message?.includes('All configured authentication methods failed') ||
-      error.message?.includes('Authentication failed') ||
-      error.message?.includes('Permission denied') ||
-      error.message?.includes('Host key verification failed') ||
-      error.message?.includes('ssh') ||
-      error.message?.includes('SSH')
+      errMsg?.includes('All configured authentication methods failed') ||
+      errMsg?.includes('Authentication failed') ||
+      errMsg?.includes('Permission denied') ||
+      errMsg?.includes('Host key verification failed') ||
+      errMsg?.includes('ssh') ||
+      errMsg?.includes('SSH')
     ) {
       return {
         severity: 'recoverable',
@@ -3753,12 +3768,12 @@ export class ConsoleAutomationServer {
 
     // File/spawn errors (like SSH executable not found)
     if (
-      error.code === 'ENOENT' ||
-      error.syscall === 'spawn' ||
-      error.message?.includes('spawn') ||
-      error.message?.includes('ENOENT') ||
-      error.path?.includes('ssh') ||
-      error.spawnargs?.some((arg: string) => arg?.includes('ssh'))
+      errRecord.code === 'ENOENT' ||
+      errRecord.syscall === 'spawn' ||
+      errMsg?.includes('spawn') ||
+      errMsg?.includes('ENOENT') ||
+      (typeof errRecord.path === 'string' && errRecord.path.includes('ssh')) ||
+      (Array.isArray(errRecord.spawnargs) && errRecord.spawnargs.some((arg: unknown) => typeof arg === 'string' && arg.includes('ssh')))
     ) {
       return {
         severity: 'recoverable',
@@ -3770,9 +3785,9 @@ export class ConsoleAutomationServer {
 
     // SSH connection timeout
     if (
-      error.message?.includes('connection timeout') ||
-      error.message?.includes('SSH connection timeout') ||
-      error.message?.includes('Operation timed out')
+      errMsg?.includes('connection timeout') ||
+      errMsg?.includes('SSH connection timeout') ||
+      errMsg?.includes('Operation timed out')
     ) {
       return {
         severity: 'recoverable',
@@ -3784,15 +3799,15 @@ export class ConsoleAutomationServer {
 
     // Network errors
     if (
-      error.code === 'ECONNREFUSED' ||
-      error.code === 'ETIMEDOUT' ||
-      error.code === 'ENOTFOUND' ||
-      error.code === 'EHOSTUNREACH' ||
-      error.code === 'ENETUNREACH' ||
-      error.code === 'ECONNRESET' ||
-      error.message?.includes('ECONNRESET') ||
-      error.message?.includes('Connection refused') ||
-      error.message?.includes('No route to host')
+      errRecord.code === 'ECONNREFUSED' ||
+      errRecord.code === 'ETIMEDOUT' ||
+      errRecord.code === 'ENOTFOUND' ||
+      errRecord.code === 'EHOSTUNREACH' ||
+      errRecord.code === 'ENETUNREACH' ||
+      errRecord.code === 'ECONNRESET' ||
+      errMsg?.includes('ECONNRESET') ||
+      errMsg?.includes('Connection refused') ||
+      errMsg?.includes('No route to host')
     ) {
       return {
         severity: 'recoverable',
@@ -3804,9 +3819,9 @@ export class ConsoleAutomationServer {
 
     // Resource exhaustion (critical)
     if (
-      error.message?.includes('out of memory') ||
-      error.message?.includes('EMFILE') ||
-      error.message?.includes('ENOMEM')
+      errMsg?.includes('out of memory') ||
+      errMsg?.includes('EMFILE') ||
+      errMsg?.includes('ENOMEM')
     ) {
       return {
         severity: 'critical',
@@ -3861,7 +3876,7 @@ export class ConsoleAutomationServer {
       if (recoveryInfo) {
         // Try to recreate the session with stored options
         const newSessionId =
-          await this.consoleManager.createSession(recoveryInfo);
+          await this.consoleManager.createSession(recoveryInfo as unknown as SessionOptions);
         this.logger.info(`Session ${sessionId} recovered as ${newSessionId}`);
         return newSessionId;
       }
@@ -3880,12 +3895,12 @@ export class ConsoleAutomationServer {
 
     // Override stdout.write to filter out non-MCP content
     process.stdout.write = function (
-      chunk: any,
-      encoding?: any,
-      callback?: any
+      chunk: string | Uint8Array,
+      encodingOrCallback?: BufferEncoding | ((err?: Error) => void),
+      callback?: (err?: Error) => void
     ): boolean {
       // Convert chunk to string for inspection
-      const str = chunk?.toString ? chunk.toString() : String(chunk);
+      const str = typeof chunk === 'string' ? chunk : chunk.toString();
 
       // Only allow JSON-RPC messages through stdout
       // MCP protocol uses JSON-RPC 2.0 format
@@ -3895,24 +3910,24 @@ export class ConsoleAutomationServer {
           str.includes('"method"') ||
           str.includes('"result"'))
       ) {
-        return originalStdoutWrite(chunk, encoding, callback);
+        return originalStdoutWrite(chunk, encodingOrCallback as BufferEncoding, callback);
       }
 
       // Redirect non-MCP content to debug log
       debugLog('[STDOUT-FILTERED]', str);
       return true;
-    } as any;
+    } as typeof process.stdout.write;
 
     // Keep stderr as-is but log it for debugging
     process.stderr.write = function (
-      chunk: any,
-      encoding?: any,
-      callback?: any
+      chunk: string | Uint8Array,
+      encodingOrCallback?: BufferEncoding | ((err?: Error) => void),
+      callback?: (err?: Error) => void
     ): boolean {
-      const str = chunk?.toString ? chunk.toString() : String(chunk);
+      const str = typeof chunk === 'string' ? chunk : chunk.toString();
       debugLog('[STDERR]', str);
-      return originalStderrWrite(chunk, encoding, callback);
-    } as any;
+      return originalStderrWrite(chunk, encodingOrCallback as BufferEncoding, callback);
+    } as typeof process.stderr.write;
 
     debugLog('[INIT] STDIO protection enabled');
   }
@@ -3944,7 +3959,7 @@ export class ConsoleAutomationServer {
       this.logger.info('Connection monitoring and auto-reconnection active');
       this.logger.info('Keepalive heartbeat active (15s interval)');
       debugLog('[DEBUG] Server initialization complete');
-    } catch (error: any) {
+    } catch (error: unknown) {
       this.logger.error('Failed to start server:', error);
 
       // Try to recover from startup errors
