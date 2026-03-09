@@ -78,6 +78,15 @@ import {
   ApplicationProfile,
 } from '../config/ConfigManager.js';
 import { DockerProtocol } from '../protocols/DockerProtocol.js';
+import { NetworkMetricsManager } from './NetworkMetricsManager.js';
+import {
+  SessionPersistenceManager,
+  SessionPersistentData,
+  SerializedQueuedCommand,
+  SessionBookmark,
+  SessionContinuityConfig,
+  SessionDataProvider,
+} from './SessionPersistenceManager.js';
 // JobManager functionality integrated into SessionManager
 import PQueue from 'p-queue';
 import { platform } from 'os';
@@ -119,63 +128,8 @@ interface SessionCommandQueue {
   bookmarks: SessionBookmark[];
 }
 
-// Enhanced session persistence interfaces
-interface SessionPersistentData {
-  sessionId: string;
-  createdAt: Date;
-  lastActivity: Date;
-  sshOptions?: SSHConnectionOptions;
-  environment: Record<string, string>;
-  workingDirectory: string;
-  commandHistory: string[];
-  pendingCommands: SerializedQueuedCommand[];
-  outputHistory: string[];
-  sessionState: any;
-  connectionState: {
-    isConnected: boolean;
-    lastConnectionTime?: Date;
-    connectionAttempts: number;
-    lastError?: string;
-  };
-  recoveryMetadata: {
-    timeoutRecoveryAttempts: number;
-    lastRecoveryTime?: Date;
-    recoveryStrategiesUsed: string[];
-  };
-}
-
-interface SerializedQueuedCommand {
-  id: string;
-  sessionId: string;
-  input: string;
-  timestamp: string;
-  retryCount: number;
-  acknowledged: boolean;
-  sent: boolean;
-  priority?: number;
-  context?: any;
-}
-
-interface SessionBookmark {
-  id: string;
-  sessionId: string;
-  timestamp: Date;
-  description: string;
-  sessionState: any;
-  commandQueueSnapshot: SerializedQueuedCommand[];
-  outputSnapshot: string[];
-  environmentSnapshot: Record<string, string>;
-  metadata?: any;
-}
-
-interface SessionContinuityConfig {
-  enablePersistence: boolean;
-  persistenceInterval: number;
-  maxBookmarks: number;
-  bookmarkStrategy: 'periodic' | 'on-command' | 'on-timeout' | 'hybrid';
-  recoveryTimeout: number;
-  enableSessionMigration: boolean;
-}
+// SessionPersistentData, SerializedQueuedCommand, SessionBookmark, SessionContinuityConfig
+// are imported from SessionPersistenceManager.ts
 
 interface CommandQueueConfig {
   maxQueueSize: number;
@@ -186,38 +140,6 @@ interface CommandQueueConfig {
   defaultPromptPattern: RegExp;
 }
 
-// Network performance monitoring for adaptive timeouts
-interface NetworkMetrics {
-  latency: number;
-  jitter: number;
-  packetLoss: number;
-  connectionQuality: 'excellent' | 'good' | 'fair' | 'poor';
-  lastUpdated: Date;
-  sampleCount: number;
-}
-
-// Adaptive timeout configuration
-interface AdaptiveTimeoutConfig {
-  baseTimeout: number;
-  maxTimeout: number;
-  minTimeout: number;
-  latencyMultiplier: number;
-  jitterTolerance: number;
-  qualityThresholds: {
-    excellent: number;
-    good: number;
-    fair: number;
-  };
-}
-
-// Connection health check result
-interface ConnectionHealthCheck {
-  isHealthy: boolean;
-  latency: number;
-  error?: string;
-  timestamp: Date;
-  consecutiveFailures: number;
-}
 
 export class ConsoleManager extends EventEmitter {
   private sessions: Map<string, ConsoleSession>;
@@ -387,20 +309,9 @@ export class ConsoleManager extends EventEmitter {
   };
 
   // Enhanced session persistence and continuity
-  private sessionPersistenceData: Map<string, SessionPersistentData> =
-    new Map();
-  private sessionBookmarks: Map<string, SessionBookmark[]> = new Map();
-  private continuityConfig: SessionContinuityConfig;
-  private persistenceTimer: NodeJS.Timeout | null = null;
-  private bookmarkTimers: Map<string, NodeJS.Timeout> = new Map();
-  private networkMonitoringTimer: NodeJS.Timeout | null = null;
-
+  private persistenceManager!: SessionPersistenceManager;
   // Network performance and adaptive timeout management
-  private networkMetrics: Map<string, NetworkMetrics> = new Map(); // host -> metrics
-  private adaptiveTimeoutConfig: AdaptiveTimeoutConfig;
-  private connectionHealthChecks: Map<string, ConnectionHealthCheck> =
-    new Map(); // host -> health
-  private latencyMeasurements: Map<string, number[]> = new Map(); // host -> recent measurements
+  private networkMetricsManager!: NetworkMetricsManager;
 
   private autoRecoveryEnabled = true;
   private predictiveHealingEnabled = true;
@@ -479,19 +390,8 @@ export class ConsoleManager extends EventEmitter {
       defaultPromptPattern: /[$#%>]\s*$/m,
     };
 
-    // Initialize adaptive timeout configuration
-    this.adaptiveTimeoutConfig = {
-      baseTimeout: 10000, // 10 seconds base timeout
-      maxTimeout: 3600000, // 1 hour maximum timeout (configurable)
-      minTimeout: 3000, // 3 seconds minimum timeout
-      latencyMultiplier: 5, // Multiply measured latency by this factor
-      jitterTolerance: 0.3, // 30% jitter tolerance
-      qualityThresholds: {
-        excellent: 50, // < 50ms latency
-        good: 200, // < 200ms latency
-        fair: 1000, // < 1000ms latency
-      },
-    };
+    // Initialize network metrics manager
+    this.networkMetricsManager = new NetworkMetricsManager(this.logger);
 
     // Initialize new production-ready components
     this.connectionPool = new ConnectionPool({
@@ -592,15 +492,8 @@ export class ConsoleManager extends EventEmitter {
 
     this.sessionValidator = new SessionValidator();
 
-    // Initialize session continuity configuration
-    this.continuityConfig = {
-      enablePersistence: true,
-      persistenceInterval: 30000, // 30 seconds
-      maxBookmarks: 10,
-      bookmarkStrategy: 'hybrid',
-      recoveryTimeout: 60000, // 1 minute
-      enableSessionMigration: true,
-    };
+    // Initialize session persistence manager
+    this.persistenceManager = new SessionPersistenceManager(this.logger);
 
     // Setup event listeners for integration
     this.setupPoolingIntegration();
@@ -609,8 +502,9 @@ export class ConsoleManager extends EventEmitter {
 
     // Start proactive interactive session monitoring
     this.startInteractiveSessionMonitoring();
-    this.startNetworkPerformanceMonitoring();
-    this.initializeSessionContinuity();
+    this.networkMetricsManager.startMonitoring(() => this.getKnownHosts());
+    this.persistenceManager.initializeSessionContinuity(this.createSessionDataProvider());
+    this.setupSessionRecoveryIntegration();
 
     // Initialize Protocol Factory
     this.protocolFactory = ProtocolFactory.getInstance();
@@ -782,27 +676,6 @@ export class ConsoleManager extends EventEmitter {
   /**
    * Initialize session continuity system
    */
-  private initializeSessionContinuity(): void {
-    if (!this.continuityConfig.enablePersistence) {
-      return;
-    }
-
-    // Start periodic persistence
-    this.persistenceTimer = setInterval(() => {
-      this.persistAllSessionData();
-    }, this.continuityConfig.persistenceInterval);
-
-    // Load any existing persistent data
-    this.loadPersistedSessionData();
-
-    // Integrate with existing SessionRecovery system
-    this.setupSessionRecoveryIntegration();
-
-    this.logger.info(
-      'Session continuity system initialized with SessionRecovery integration'
-    );
-  }
-
   /**
    * Initialize command tracking for a session with enhanced persistence
    */
@@ -836,108 +709,50 @@ export class ConsoleManager extends EventEmitter {
     this.promptPatterns.set(sessionId, promptPattern);
 
     // Initialize persistent session data
-    this.initializeSessionPersistence(sessionId, options);
+    this.persistenceManager.initializeSessionPersistence(sessionId, options);
   }
 
   /**
-   * Initialize persistent session data for a session
-   */
-  private initializeSessionPersistence(
-    sessionId: string,
-    options: SessionOptions
-  ): void {
-    const persistentData: SessionPersistentData = {
-      sessionId,
-      createdAt: new Date(),
-      lastActivity: new Date(),
-      sshOptions: options.sshOptions,
-      environment: options.env || {},
-      workingDirectory: options.cwd || process.cwd(),
-      commandHistory: [],
-      pendingCommands: [],
-      outputHistory: [],
-      sessionState: {},
-      connectionState: {
-        isConnected: true,
-        lastConnectionTime: new Date(),
-        connectionAttempts: 0,
-      },
-      recoveryMetadata: {
-        timeoutRecoveryAttempts: 0,
-        recoveryStrategiesUsed: [],
-      },
-    };
-
-    this.sessionPersistenceData.set(sessionId, persistentData);
-    this.sessionBookmarks.set(sessionId, []);
-
-    // Start bookmark creation based on strategy
-    this.initializeBookmarkStrategy(sessionId);
-
-    this.logger.debug(`Initialized session persistence for ${sessionId}`);
-  }
-
-  /**
-   * Initialize bookmark strategy for a session
-   */
-  private initializeBookmarkStrategy(sessionId: string): void {
-    const strategy = this.continuityConfig.bookmarkStrategy;
-
-    if (strategy === 'periodic' || strategy === 'hybrid') {
-      // Create periodic bookmarks
-      const timer = setInterval(() => {
-        this.createSessionBookmark(sessionId, 'periodic');
-      }, 60000); // Every minute
-
-      this.bookmarkTimers.set(sessionId, timer);
-    }
-  }
-
-  /**
-   * Create a session bookmark for recovery purposes
+   * Create a session bookmark, delegating to persistence manager with command queue data
    */
   private async createSessionBookmark(
     sessionId: string,
     trigger: string
   ): Promise<void> {
-    const persistentData = this.sessionPersistenceData.get(sessionId);
     const queue = this.commandQueues.get(sessionId);
+    const snapshot = queue ? this.serializeCommandQueue(queue.commands) : undefined;
+    const queueLength = queue ? queue.commands.length : 0;
 
-    if (!persistentData || !queue) {
-      return;
+    await this.persistenceManager.createSessionBookmark(sessionId, trigger, snapshot, queueLength);
+
+    // Update queue bookmarks reference
+    if (queue) {
+      queue.bookmarks = this.persistenceManager.getBookmarks(sessionId);
     }
+  }
 
-    const bookmark: SessionBookmark = {
-      id: uuidv4(),
-      sessionId,
-      timestamp: new Date(),
-      description: `${trigger} bookmark`,
-      sessionState: { ...persistentData.sessionState },
-      commandQueueSnapshot: this.serializeCommandQueue(queue.commands),
-      outputSnapshot: [...persistentData.outputHistory],
-      environmentSnapshot: { ...persistentData.environment },
-      metadata: {
-        trigger,
-        connectionState: { ...persistentData.connectionState },
-        queueLength: queue.commands.length,
+  /**
+   * Create a session data provider for the persistence manager
+   */
+  private createSessionDataProvider(): SessionDataProvider {
+    return {
+      getCommandQueueSnapshot: (sessionId: string) => {
+        const queue = this.commandQueues.get(sessionId);
+        if (queue) {
+          return this.serializeCommandQueue(queue.commands);
+        }
+        return undefined;
+      },
+      getOutputHistory: (sessionId: string) => {
+        const outputBuffer = this.outputBuffers.get(sessionId);
+        if (outputBuffer) {
+          return outputBuffer
+            .slice(-100) // Keep last 100 outputs
+            .map((output) => output.data);
+        }
+        return undefined;
       },
     };
-
-    const bookmarks = this.sessionBookmarks.get(sessionId) || [];
-    bookmarks.push(bookmark);
-
-    // Keep only the latest N bookmarks
-    if (bookmarks.length > this.continuityConfig.maxBookmarks) {
-      bookmarks.shift();
-    }
-
-    this.sessionBookmarks.set(sessionId, bookmarks);
-
-    // Update persistent data with bookmark
-    queue.bookmarks = bookmarks;
-    persistentData.lastActivity = new Date();
-
-    this.logger.debug(`Created ${trigger} bookmark for session ${sessionId}`);
   }
 
   /**
@@ -2337,7 +2152,7 @@ export class ConsoleManager extends EventEmitter {
     const timeoutClassification = this.classifyTimeoutError(timeoutError);
 
     // Update persistent data with recovery attempt
-    const persistentData = this.sessionPersistenceData.get(sessionId);
+    const persistentData = this.persistenceManager.getPersistenceData(sessionId);
     if (persistentData) {
       persistentData.recoveryMetadata.timeoutRecoveryAttempts =
         currentAttempts + 1;
@@ -2564,7 +2379,7 @@ export class ConsoleManager extends EventEmitter {
       // Success is automatically recorded by the retry manager
 
       // Step 8: Restore session state from latest bookmark if available
-      await this.restoreSessionStateFromBookmark(sessionId);
+      await this.persistenceManager.restoreSessionStateFromBookmark(sessionId);
 
       // Step 9: Update persistent data with successful recovery
       if (persistentData) {
@@ -2650,53 +2465,19 @@ export class ConsoleManager extends EventEmitter {
   }
 
   /**
-   * Restore session state from the most recent bookmark
-   */
-  private async restoreSessionStateFromBookmark(
-    sessionId: string
-  ): Promise<void> {
-    const bookmarks = this.sessionBookmarks.get(sessionId);
-    if (!bookmarks || bookmarks.length === 0) {
-      this.logger.debug(
-        `No bookmarks available for session ${sessionId} restoration`
-      );
-      return;
-    }
-
-    // Get the most recent bookmark
-    const latestBookmark = bookmarks[bookmarks.length - 1];
-    const persistentData = this.sessionPersistenceData.get(sessionId);
-
-    if (persistentData) {
-      // Restore session state
-      persistentData.sessionState = { ...latestBookmark.sessionState };
-      persistentData.environment = { ...latestBookmark.environmentSnapshot };
-      persistentData.outputHistory = [...latestBookmark.outputSnapshot];
-
-      this.logger.info(
-        `Restored session state for ${sessionId} from bookmark: ${latestBookmark.description}`
-      );
-    }
-  }
-
-  /**
    * Restore command queue from persistent data
    */
   private restoreCommandQueueFromPersistence(sessionId: string): number {
-    const persistentData = this.sessionPersistenceData.get(sessionId);
+    const serializedCommands = this.persistenceManager.restoreCommandQueueFromPersistence(sessionId);
     const queue = this.commandQueues.get(sessionId);
 
-    if (
-      !persistentData ||
-      !queue ||
-      persistentData.pendingCommands.length === 0
-    ) {
+    if (serializedCommands.length === 0 || !queue) {
       return 0;
     }
 
     // Deserialize and restore pending commands
     const restoredCommands = this.deserializeCommandQueue(
-      persistentData.pendingCommands,
+      serializedCommands,
       sessionId
     );
 
@@ -2728,7 +2509,7 @@ export class ConsoleManager extends EventEmitter {
 
       // Get original session info
       const session = this.sessions.get(sessionId);
-      const persistentData = this.sessionPersistenceData.get(sessionId);
+      const persistentData = this.persistenceManager.getPersistenceData(sessionId);
 
       if (!session || !session.sshOptions) {
         return { success: false, error: 'Session or SSH options not found' };
@@ -2750,7 +2531,7 @@ export class ConsoleManager extends EventEmitter {
       );
       if (reconnectResult.success) {
         // Restore session state after reconnection
-        await this.restoreSessionStateFromBookmark(sessionId);
+        await this.persistenceManager.restoreSessionStateFromBookmark(sessionId);
         const restoredCommands =
           this.restoreCommandQueueFromPersistence(sessionId);
 
@@ -2783,67 +2564,6 @@ export class ConsoleManager extends EventEmitter {
   }
 
   /**
-   * Persist all session data to storage
-   */
-  private async persistAllSessionData(): Promise<void> {
-    if (!this.continuityConfig.enablePersistence) {
-      return;
-    }
-
-    try {
-      for (const [sessionId, persistentData] of Array.from(
-        this.sessionPersistenceData
-      )) {
-        // Update current command queue state
-        const queue = this.commandQueues.get(sessionId);
-        if (queue) {
-          persistentData.pendingCommands = this.serializeCommandQueue(
-            queue.commands
-          );
-        }
-
-        // Update output history
-        const outputBuffer = this.outputBuffers.get(sessionId);
-        if (outputBuffer) {
-          persistentData.outputHistory = outputBuffer
-            .slice(-100) // Keep last 100 outputs
-            .map((output) => output.data);
-        }
-
-        // Save to disk (implement based on your storage preference)
-        await this.persistSessionData(sessionId, persistentData);
-      }
-
-      this.logger.debug(
-        `Persisted data for ${this.sessionPersistenceData.size} sessions`
-      );
-    } catch (error) {
-      this.logger.error('Failed to persist session data:', error);
-    }
-  }
-
-  /**
-   * Persist session data to storage (placeholder - implement based on storage choice)
-   */
-  private async persistSessionData(
-    sessionId: string,
-    data: SessionPersistentData
-  ): Promise<void> {
-    // This would typically save to file system, database, or other storage
-    // For now, it's a placeholder that could be implemented based on requirements
-    this.logger.debug(`Persisting session data for ${sessionId}`);
-  }
-
-  /**
-   * Load persisted session data from storage
-   */
-  private async loadPersistedSessionData(): Promise<void> {
-    // This would typically load from file system, database, or other storage
-    // For now, it's a placeholder that could be implemented based on requirements
-    this.logger.debug('Loading persisted session data');
-  }
-
-  /**
    * Setup integration with SessionRecovery system
    */
   private setupSessionRecoveryIntegration(): void {
@@ -2856,7 +2576,7 @@ export class ConsoleManager extends EventEmitter {
       const { sessionId, sessionState, persistentData } = data;
 
       // Update our persistent data if we have it
-      const ourPersistentData = this.sessionPersistenceData.get(sessionId);
+      const ourPersistentData = this.persistenceManager.getPersistenceData(sessionId);
       if (ourPersistentData && persistentData) {
         // Merge session recovery data with our enhanced persistence
         ourPersistentData.recoveryMetadata.timeoutRecoveryAttempts += 1;
@@ -2875,14 +2595,14 @@ export class ConsoleManager extends EventEmitter {
       const { sessionId } = data;
 
       // Update our persistent data on successful recovery
-      const persistentData = this.sessionPersistenceData.get(sessionId);
-      if (persistentData) {
-        persistentData.connectionState.isConnected = true;
-        persistentData.connectionState.lastConnectionTime = new Date();
-        persistentData.recoveryMetadata.recoveryStrategiesUsed.push(
+      const recoveredPersistentData = this.persistenceManager.getPersistenceData(sessionId);
+      if (recoveredPersistentData) {
+        recoveredPersistentData.connectionState.isConnected = true;
+        recoveredPersistentData.connectionState.lastConnectionTime = new Date();
+        recoveredPersistentData.recoveryMetadata.recoveryStrategiesUsed.push(
           'session-recovery-success'
         );
-        persistentData.lastActivity = new Date();
+        recoveredPersistentData.lastActivity = new Date();
       }
 
       // Create success bookmark
@@ -2896,8 +2616,8 @@ export class ConsoleManager extends EventEmitter {
     // Provide session restoration data to SessionRecovery system
     this.sessionRecovery.on('snapshot-request', (data) => {
       const { sessionId, callback } = data;
-      const persistentData = this.sessionPersistenceData.get(sessionId);
-      const bookmarks = this.sessionBookmarks.get(sessionId);
+      const persistentData = this.persistenceManager.getPersistenceData(sessionId);
+      const bookmarks = this.persistenceManager.getBookmarks(sessionId);
 
       if (persistentData && bookmarks) {
         const updates = {
@@ -2927,7 +2647,7 @@ export class ConsoleManager extends EventEmitter {
     sessionId: string,
     targetHost: string
   ): Promise<boolean> {
-    if (!this.continuityConfig.enableSessionMigration) {
+    if (!this.persistenceManager.getContinuityConfig().enableSessionMigration) {
       this.logger.warn(
         `Session migration is disabled for session ${sessionId}`
       );
@@ -2942,7 +2662,7 @@ export class ConsoleManager extends EventEmitter {
       // Create pre-migration bookmark
       await this.createSessionBookmark(sessionId, 'pre-migration');
 
-      const persistentData = this.sessionPersistenceData.get(sessionId);
+      const persistentData = this.persistenceManager.getPersistenceData(sessionId);
       if (!persistentData || !persistentData.sshOptions) {
         return false;
       }
@@ -2971,190 +2691,6 @@ export class ConsoleManager extends EventEmitter {
     }
   }
 
-  /**
-   * Measure network latency to a host
-   */
-  private async measureNetworkLatency(
-    host: string,
-    port: number = 22
-  ): Promise<number> {
-    const startTime = Date.now();
-
-    try {
-      // Use a simple TCP connection test for latency measurement
-      const client = new SSHClient();
-
-      return new Promise((resolve) => {
-        const timeout = setTimeout(() => {
-          client.destroy();
-          resolve(5000); // Return high latency on timeout
-        }, 5000);
-
-        client.on('ready', () => {
-          clearTimeout(timeout);
-          const latency = Date.now() - startTime;
-          client.destroy();
-          resolve(latency);
-        });
-
-        client.on('error', () => {
-          clearTimeout(timeout);
-          client.destroy();
-          resolve(5000); // Return high latency on error
-        });
-
-        // Minimal connection attempt just for timing
-        client.connect({
-          host,
-          port,
-          username: 'test', // This will fail but still measure connection time
-          timeout: 5000,
-        });
-      });
-    } catch (error) {
-      return 5000; // Return high latency on exception
-    }
-  }
-
-  /**
-   * Update network metrics for a host
-   */
-  private updateNetworkMetrics(host: string, latency: number): void {
-    const existing = this.networkMetrics.get(host);
-    const measurements = this.latencyMeasurements.get(host) || [];
-
-    // Keep last 10 measurements for jitter calculation
-    measurements.push(latency);
-    if (measurements.length > 10) {
-      measurements.shift();
-    }
-    this.latencyMeasurements.set(host, measurements);
-
-    // Calculate jitter (variance in latency)
-    const avgLatency =
-      measurements.reduce((sum, lat) => sum + lat, 0) / measurements.length;
-    const jitter =
-      measurements.length > 1
-        ? Math.sqrt(
-            measurements.reduce(
-              (sum, lat) => sum + Math.pow(lat - avgLatency, 2),
-              0
-            ) / measurements.length
-          )
-        : 0;
-
-    // Determine connection quality
-    let connectionQuality: 'excellent' | 'good' | 'fair' | 'poor';
-    if (avgLatency < this.adaptiveTimeoutConfig.qualityThresholds.excellent) {
-      connectionQuality = 'excellent';
-    } else if (avgLatency < this.adaptiveTimeoutConfig.qualityThresholds.good) {
-      connectionQuality = 'good';
-    } else if (avgLatency < this.adaptiveTimeoutConfig.qualityThresholds.fair) {
-      connectionQuality = 'fair';
-    } else {
-      connectionQuality = 'poor';
-    }
-
-    const metrics: NetworkMetrics = {
-      latency: avgLatency,
-      jitter,
-      packetLoss: 0, // Would need more sophisticated testing for packet loss
-      connectionQuality,
-      lastUpdated: new Date(),
-      sampleCount: (existing?.sampleCount || 0) + 1,
-    };
-
-    this.networkMetrics.set(host, metrics);
-    this.logger.debug(`Updated network metrics for ${host}:`, {
-      latency: avgLatency.toFixed(2) + 'ms',
-      jitter: jitter.toFixed(2) + 'ms',
-      quality: connectionQuality,
-    });
-  }
-
-  /**
-   * Calculate adaptive timeout based on network conditions
-   */
-  private calculateAdaptiveTimeout(host: string): number {
-    const metrics = this.networkMetrics.get(host);
-    const config = this.adaptiveTimeoutConfig;
-
-    if (!metrics) {
-      return config.baseTimeout;
-    }
-
-    // Base calculation: base timeout + (latency * multiplier)
-    let adaptiveTimeout =
-      config.baseTimeout + metrics.latency * config.latencyMultiplier;
-
-    // Adjust for jitter
-    const jitterAdjustment = metrics.jitter * config.jitterTolerance;
-    adaptiveTimeout += jitterAdjustment;
-
-    // Apply connection quality adjustments
-    switch (metrics.connectionQuality) {
-      case 'poor':
-        adaptiveTimeout *= 2.0; // Double timeout for poor connections
-        break;
-      case 'fair':
-        adaptiveTimeout *= 1.5; // 50% increase for fair connections
-        break;
-      case 'good':
-        adaptiveTimeout *= 1.1; // 10% increase for good connections
-        break;
-      case 'excellent':
-        // No adjustment for excellent connections
-        break;
-    }
-
-    // Ensure timeout stays within bounds
-    adaptiveTimeout = Math.max(
-      config.minTimeout,
-      Math.min(config.maxTimeout, adaptiveTimeout)
-    );
-
-    this.logger.debug(
-      `Calculated adaptive timeout for ${host}: ${adaptiveTimeout.toFixed(0)}ms (quality: ${metrics.connectionQuality})`
-    );
-    return Math.round(adaptiveTimeout);
-  }
-
-  /**
-   * Perform connection health check
-   */
-  private async performConnectionHealthCheck(
-    host: string,
-    port: number = 22
-  ): Promise<ConnectionHealthCheck> {
-    const startTime = Date.now();
-    const existing = this.connectionHealthChecks.get(host);
-
-    try {
-      const latency = await this.measureNetworkLatency(host, port);
-      const healthCheck: ConnectionHealthCheck = {
-        isHealthy: latency < this.adaptiveTimeoutConfig.qualityThresholds.fair,
-        latency,
-        timestamp: new Date(),
-        consecutiveFailures: 0,
-      };
-
-      this.connectionHealthChecks.set(host, healthCheck);
-      this.updateNetworkMetrics(host, latency);
-
-      return healthCheck;
-    } catch (error) {
-      const healthCheck: ConnectionHealthCheck = {
-        isHealthy: false,
-        latency: 5000,
-        error: error instanceof Error ? error.message : 'Unknown error',
-        timestamp: new Date(),
-        consecutiveFailures: (existing?.consecutiveFailures || 0) + 1,
-      };
-
-      this.connectionHealthChecks.set(host, healthCheck);
-      return healthCheck;
-    }
-  }
 
   /**
    * Test SSH connection responsiveness with enhanced fallback mechanisms
@@ -3651,7 +3187,7 @@ export class ConsoleManager extends EventEmitter {
       }
 
       // Pre-connection health check
-      const healthCheck = await this.performConnectionHealthCheck(
+      const healthCheck = await this.networkMetricsManager.performConnectionHealthCheck(
         session.sshOptions.host,
         session.sshOptions.port || 22
       );
@@ -3710,7 +3246,7 @@ export class ConsoleManager extends EventEmitter {
                 reconnectTimeMs: reconnectTime,
                 healthCheck: healthCheck.isHealthy,
                 connectionQuality:
-                  this.networkMetrics.get(session.sshOptions.host)
+                  this.networkMetricsManager.getMetrics(session.sshOptions.host)
                     ?.connectionQuality || 'unknown',
               },
             };
@@ -3936,7 +3472,7 @@ export class ConsoleManager extends EventEmitter {
     const host = config.host || 'unknown';
 
     // Perform pre-connection health check
-    const healthCheck = await this.performConnectionHealthCheck(
+    const healthCheck = await this.networkMetricsManager.performConnectionHealthCheck(
       host,
       config.port
     );
@@ -3947,7 +3483,7 @@ export class ConsoleManager extends EventEmitter {
     }
 
     // Calculate adaptive timeout based on network conditions
-    const adaptiveTimeout = this.calculateAdaptiveTimeout(host);
+    const adaptiveTimeout = this.networkMetricsManager.calculateAdaptiveTimeout(host);
     this.logger.info(
       `Using adaptive timeout for SSH recovery connection to ${host}: ${adaptiveTimeout}ms`
     );
@@ -3971,7 +3507,7 @@ export class ConsoleManager extends EventEmitter {
         );
 
         // Update network metrics with timeout information
-        this.updateNetworkMetrics(host, actualTimeout);
+        this.networkMetricsManager.updateNetworkMetrics(host, actualTimeout);
 
         reject(
           new Error(
@@ -3988,7 +3524,7 @@ export class ConsoleManager extends EventEmitter {
         );
 
         // Update network metrics with successful connection time
-        this.updateNetworkMetrics(host, connectionTime);
+        this.networkMetricsManager.updateNetworkMetrics(host, connectionTime);
 
         resolve();
       });
@@ -4002,7 +3538,7 @@ export class ConsoleManager extends EventEmitter {
         );
 
         // Update network metrics with error timing
-        this.updateNetworkMetrics(
+        this.networkMetricsManager.updateNetworkMetrics(
           host,
           Math.max(connectionTime, adaptiveTimeout)
         );
@@ -7354,7 +6890,7 @@ export class ConsoleManager extends EventEmitter {
     const retryKey = `${poolKey}_${sessionId}`;
 
     // Perform pre-connection health check
-    const healthCheck = await this.performConnectionHealthCheck(
+    const healthCheck = await this.networkMetricsManager.performConnectionHealthCheck(
       host,
       config.port
     );
@@ -7365,11 +6901,11 @@ export class ConsoleManager extends EventEmitter {
     }
 
     // Calculate adaptive retry strategy based on connection quality
-    const networkMetrics = this.networkMetrics.get(host);
-    const maxRetries = this.calculateAdaptiveMaxRetries(
+    const networkMetrics = this.networkMetricsManager.getMetrics(host);
+    const maxRetries = this.networkMetricsManager.calculateAdaptiveMaxRetries(
       networkMetrics?.connectionQuality
     );
-    const baseDelay = this.calculateAdaptiveBaseDelay(
+    const baseDelay = this.networkMetricsManager.calculateAdaptiveBaseDelay(
       networkMetrics?.connectionQuality
     );
 
@@ -7384,7 +6920,7 @@ export class ConsoleManager extends EventEmitter {
         this.retryAttempts.set(retryKey, currentAttempt);
 
         // Calculate adaptive timeout for this attempt
-        const adaptiveTimeout = this.calculateAdaptiveTimeout(host);
+        const adaptiveTimeout = this.networkMetricsManager.calculateAdaptiveTimeout(host);
         const connectionStartTime = Date.now();
 
         this.logger.info(
@@ -7415,7 +6951,7 @@ export class ConsoleManager extends EventEmitter {
           );
 
           // Update network metrics with timeout information
-          this.updateNetworkMetrics(host, actualTimeout);
+          this.networkMetricsManager.updateNetworkMetrics(host, actualTimeout);
 
           const error = new Error(
             `SSH connection timeout after ${adaptiveTimeout}ms (actual: ${actualTimeout}ms)`
@@ -7448,7 +6984,7 @@ export class ConsoleManager extends EventEmitter {
           );
 
           // Update network metrics with successful connection time
-          this.updateNetworkMetrics(host, connectionTime);
+          this.networkMetricsManager.updateNetworkMetrics(host, connectionTime);
 
           // Setup connection error handler for reconnection
           client.on('error', (error) => {
@@ -7472,7 +7008,7 @@ export class ConsoleManager extends EventEmitter {
           );
 
           // Update network metrics with error timing
-          this.updateNetworkMetrics(
+          this.networkMetricsManager.updateNetworkMetrics(
             host,
             Math.max(connectionTime, adaptiveTimeout / 2)
           );
@@ -7508,117 +7044,13 @@ export class ConsoleManager extends EventEmitter {
   }
 
   /**
-   * Calculate adaptive maximum retries based on connection quality
+   * Get known hosts from network metrics and SSH connection pool
    */
-  private calculateAdaptiveMaxRetries(
-    connectionQuality?: 'excellent' | 'good' | 'fair' | 'poor'
-  ): number {
-    switch (connectionQuality) {
-      case 'excellent':
-        return 2; // Fewer retries for excellent connections
-      case 'good':
-        return 3; // Standard retries for good connections
-      case 'fair':
-        return 4; // More retries for fair connections
-      case 'poor':
-        return 5; // Maximum retries for poor connections
-      default:
-        return 3; // Default for unknown quality
-    }
-  }
-
-  /**
-   * Calculate adaptive base delay based on connection quality
-   */
-  private calculateAdaptiveBaseDelay(
-    connectionQuality?: 'excellent' | 'good' | 'fair' | 'poor'
-  ): number {
-    switch (connectionQuality) {
-      case 'excellent':
-        return 500; // 0.5 seconds for excellent connections
-      case 'good':
-        return 1000; // 1 second for good connections
-      case 'fair':
-        return 2000; // 2 seconds for fair connections
-      case 'poor':
-        return 3000; // 3 seconds for poor connections
-      default:
-        return 1000; // Default 1 second
-    }
-  }
-
-  /**
-   * Start periodic network performance monitoring
-   */
-  private startNetworkPerformanceMonitoring(): void {
-    // Monitor all known hosts every 5 minutes
-    const monitoringInterval = 5 * 60 * 1000; // 5 minutes
-
-    this.networkMonitoringTimer = setInterval(async () => {
-      const hosts = Array.from(
-        new Set([
-          ...Array.from(this.networkMetrics.keys()),
-          ...Array.from(this.sshConnectionPool.keys()).map((key) => {
-            // Extract host from poolKey format (usually host:port)
-            return key.split(':')[0];
-          }),
-        ])
-      );
-
-      for (const host of hosts) {
-        try {
-          await this.performConnectionHealthCheck(host);
-          this.logger.debug(`Completed periodic health check for ${host}`);
-        } catch (error) {
-          this.logger.warn(`Failed periodic health check for ${host}:`, error);
-        }
-      }
-
-      // Clean up old metrics (older than 24 hours)
-      this.cleanupOldNetworkMetrics();
-    }, monitoringInterval);
-
-    this.logger.info('Started network performance monitoring');
-  }
-
-  /**
-   * Clean up old network metrics and measurements
-   */
-  private cleanupOldNetworkMetrics(): void {
-    const maxAge = 24 * 60 * 60 * 1000; // 24 hours
-    const now = Date.now();
-
-    Array.from(this.networkMetrics.entries()).forEach(([host, metrics]) => {
-      if (now - metrics.lastUpdated.getTime() > maxAge) {
-        this.networkMetrics.delete(host);
-        this.latencyMeasurements.delete(host);
-        this.connectionHealthChecks.delete(host);
-        this.logger.debug(`Cleaned up old metrics for ${host}`);
-      }
+  private getKnownHosts(): string[] {
+    return Array.from(this.sshConnectionPool.keys()).map((key) => {
+      // Extract host from poolKey format (usually host:port)
+      return key.split(':')[0];
     });
-  }
-
-  /**
-   * Get network performance summary for debugging
-   */
-  public getNetworkPerformanceSummary(): Array<{
-    host: string;
-    latency: number;
-    jitter: number;
-    quality: string;
-    adaptiveTimeout: number;
-    lastUpdated: Date;
-    sampleCount: number;
-  }> {
-    return Array.from(this.networkMetrics.entries()).map(([host, metrics]) => ({
-      host,
-      latency: metrics.latency,
-      jitter: metrics.jitter,
-      quality: metrics.connectionQuality,
-      adaptiveTimeout: this.calculateAdaptiveTimeout(host),
-      lastUpdated: metrics.lastUpdated,
-      sampleCount: metrics.sampleCount,
-    }));
   }
 
   private async createSSHChannel(
@@ -7923,8 +7355,8 @@ export class ConsoleManager extends EventEmitter {
    */
   private initializeCommandQueue(sessionId: string): void {
     if (!this.commandQueues.has(sessionId)) {
-      const persistentData = this.sessionPersistenceData.get(sessionId);
-      const bookmarks = this.sessionBookmarks.get(sessionId) || [];
+      const persistentData = this.persistenceManager.getPersistenceData(sessionId);
+      const bookmarks = this.persistenceManager.getBookmarks(sessionId);
 
       const queue: SessionCommandQueue = {
         sessionId,
@@ -7985,7 +7417,7 @@ export class ConsoleManager extends EventEmitter {
           // Calculate adaptive acknowledgment timeout based on network conditions
           const session = this.sessions.get(sessionId);
           const adaptiveTimeout = session?.sshOptions?.host
-            ? this.calculateAdaptiveTimeout(session.sshOptions.host)
+            ? this.networkMetricsManager.calculateAdaptiveTimeout(session.sshOptions.host)
             : this.queueConfig.acknowledgmentTimeout;
 
           // Wait for acknowledgment or timeout
@@ -8026,7 +7458,7 @@ export class ConsoleManager extends EventEmitter {
                 adaptiveTimeout,
                 effectiveTimeout,
                 networkQuality:
-                  this.networkMetrics.get(session?.sshOptions?.host || '')
+                  this.networkMetricsManager.getMetrics(session?.sshOptions?.host || '')
                     ?.connectionQuality || 'unknown',
               },
             };
@@ -8073,7 +7505,7 @@ export class ConsoleManager extends EventEmitter {
               command.retryCount = (command.retryCount || 0) + 1;
 
               // Apply adaptive backoff based on network conditions and retry count
-              const networkMetrics = this.networkMetrics.get(
+              const networkMetrics = this.networkMetricsManager.getMetrics(
                 session?.sshOptions?.host || ''
               );
               let backoffMs = 1000 * Math.pow(2, command.retryCount - 1); // Exponential backoff
@@ -8145,7 +7577,7 @@ export class ConsoleManager extends EventEmitter {
             command.timestamp = new Date();
 
             // Update persistent data with command activity
-            const persistentData = this.sessionPersistenceData.get(sessionId);
+            const persistentData = this.persistenceManager.getPersistenceData(sessionId);
             if (persistentData) {
               persistentData.lastActivity = new Date();
               persistentData.commandHistory.push(command.input);
@@ -8157,9 +7589,10 @@ export class ConsoleManager extends EventEmitter {
             }
 
             // Create bookmark on command if using hybrid or on-command strategy
+            const bookmarkStrategy = this.persistenceManager.getContinuityConfig().bookmarkStrategy;
             if (
-              this.continuityConfig.bookmarkStrategy === 'on-command' ||
-              this.continuityConfig.bookmarkStrategy === 'hybrid'
+              bookmarkStrategy === 'on-command' ||
+              bookmarkStrategy === 'hybrid'
             ) {
               await this.createSessionBookmark(sessionId, 'on-command');
             }
@@ -9222,8 +8655,8 @@ export class ConsoleManager extends EventEmitter {
     }
 
     // Create final bookmark before cleanup if persistent data exists
-    const persistentData = this.sessionPersistenceData.get(sessionId);
-    if (persistentData && this.continuityConfig.enablePersistence) {
+    const cleanupPersistentData = this.persistenceManager.getPersistenceData(sessionId);
+    if (cleanupPersistentData && this.persistenceManager.getContinuityConfig().enablePersistence) {
       this.createSessionBookmark(sessionId, 'session-cleanup').catch(
         (error) => {
           this.logger.error(
@@ -9241,15 +8674,7 @@ export class ConsoleManager extends EventEmitter {
     });
 
     // Clean up enhanced session persistence data
-    this.sessionPersistenceData.delete(sessionId);
-    this.sessionBookmarks.delete(sessionId);
-
-    // Clear bookmark timers
-    const bookmarkTimer = this.bookmarkTimers.get(sessionId);
-    if (bookmarkTimer) {
-      clearInterval(bookmarkTimer);
-      this.bookmarkTimers.delete(sessionId);
-    }
+    this.persistenceManager.deleteSessionData(sessionId);
 
     // Clean up original session data
     this.sessions.delete(sessionId);
@@ -10332,11 +9757,8 @@ export class ConsoleManager extends EventEmitter {
       this.resourceMonitor = null;
     }
 
-    // Clean up network monitoring timer
-    if (this.networkMonitoringTimer) {
-      clearInterval(this.networkMonitoringTimer);
-      this.networkMonitoringTimer = null;
-    }
+    // Clean up network monitoring
+    this.networkMetricsManager.dispose();
 
     // Clean up session health check intervals
     for (const [, timer] of this.sessionHealthCheckIntervals) {
@@ -10397,23 +9819,8 @@ export class ConsoleManager extends EventEmitter {
     this.retryAttempts.clear();
 
     // Clean up enhanced session persistence system
-    if (this.persistenceTimer) {
-      clearInterval(this.persistenceTimer);
-      this.persistenceTimer = null;
-    }
-
-    // Clear all bookmark timers
-    for (const [sessionId, timer] of this.bookmarkTimers) {
-      clearInterval(timer);
-    }
-    this.bookmarkTimers.clear();
-
-    // Persist final session state before shutdown
-    await this.persistAllSessionData();
-
-    // Clear persistence data
-    this.sessionPersistenceData.clear();
-    this.sessionBookmarks.clear();
+    await this.persistenceManager.persistAllSessionData(this.createSessionDataProvider());
+    this.persistenceManager.dispose();
 
     // Clean up command queue system
     this.commandQueues.forEach((queue, sessionId) => {
