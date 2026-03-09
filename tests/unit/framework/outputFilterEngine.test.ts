@@ -2,8 +2,8 @@ import {
   OutputFilterEngine,
   FilterOptions,
   FilterResult,
-} from '../core/OutputFilterEngine.js';
-import { ConsoleOutput } from '../types/index.js';
+} from '../../../src/core/OutputFilterEngine.js';
+import { ConsoleOutput } from '../../../src/types/index.js';
 
 describe('OutputFilterEngine', () => {
   let filterEngine: OutputFilterEngine;

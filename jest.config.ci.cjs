@@ -6,9 +6,8 @@ module.exports = {
   preset: 'ts-jest',
   testEnvironment: 'node',
 
-  // Re-enabled unit tests after confirming moduleNameMapper is correct
   testMatch: [
-    '<rootDir>/src/tests/**/*.test.ts'
+    '<rootDir>/tests/unit/**/*.test.ts'
   ],
 
   testPathIgnorePatterns: [
@@ -16,17 +15,17 @@ module.exports = {
     '/dist/',
     '/coverage/',
     '/tests/integration/',
-    '/tests/stress/',
-    '/test/'
+    '/tests/stress/'
   ],
 
   moduleNameMapper: {
     '^(\.{1,2}/.+)\.js$': '$1',
     '^@/(.*)$': '<rootDir>/src/$1',
+    '^@tests/(.*)$': '<rootDir>/tests/$1',
     // Mock ESM-only packages
-    '^strip-ansi$': '<rootDir>/src/tests/__mocks__/strip-ansi.js',
-    '^ansi-regex$': '<rootDir>/src/tests/__mocks__/ansi-regex.js',
-    '^p-queue$': '<rootDir>/src/tests/__mocks__/p-queue.js'
+    '^strip-ansi$': '<rootDir>/tests/__mocks__/strip-ansi.cjs',
+    '^ansi-regex$': '<rootDir>/tests/__mocks__/ansi-regex.cjs',
+    '^p-queue$': '<rootDir>/tests/__mocks__/p-queue.cjs'
   },
 
   moduleFileExtensions: ['ts', 'tsx', 'js', 'jsx', 'json', 'node'],

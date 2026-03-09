@@ -1,7 +1,7 @@
 import { describe, beforeAll, afterAll, beforeEach, afterEach, it, expect, jest } from '@jest/globals';
-import { SSHAdapter, SSHOptions } from '../../src/core/SSHAdapter.js';
-import { ConsoleManager } from '../../src/core/ConsoleManager.js';
-import { SSHServer } from '../mocks/SSHServer.js';
+import { SSHAdapter, SSHOptions } from '../../../src/core/SSHAdapter.js';
+import { ConsoleManager } from '../../../src/core/ConsoleManager.js';
+import { SSHServer } from '../../mocks/SSHServer.js';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';

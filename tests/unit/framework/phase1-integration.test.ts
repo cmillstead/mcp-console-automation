@@ -3,10 +3,10 @@
  * Tests the full workflow: Record -> Replay -> Generate Code
  */
 
-import { TestRecorder } from '../testing/TestRecorder.js';
-import { TestReplayEngine } from '../testing/TestReplayEngine.js';
-import { CodeGenerator } from '../testing/CodeGenerator.js';
-import { ConsoleManager } from '../core/ConsoleManager.js';
+import { TestRecorder } from '../../../src/testing/TestRecorder.js';
+import { TestReplayEngine } from '../../../src/testing/TestReplayEngine.js';
+import { CodeGenerator } from '../../../src/testing/CodeGenerator.js';
+import { ConsoleManager } from '../../../src/core/ConsoleManager.js';
 import * as fs from 'fs';
 import * as path from 'path';
 

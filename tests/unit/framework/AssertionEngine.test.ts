@@ -3,8 +3,8 @@
  * Tests assertion evaluation logic
  */
 
-import { AssertionEngine } from '../testing/AssertionEngine.js';
-import { Assertion } from '../types/test-framework.js';
+import { AssertionEngine } from '../../../src/testing/AssertionEngine.js';
+import { Assertion } from '../../../src/types/test-framework.js';
 
 describe('AssertionEngine', () => {
   let engine: AssertionEngine;

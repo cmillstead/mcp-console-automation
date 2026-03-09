@@ -2,7 +2,7 @@
  * TestEnvironment Tests
  */
 
-import { TestEnvironmentManager } from '../testing/TestEnvironment.js';
+import { TestEnvironmentManager } from '../../../src/testing/TestEnvironment.js';
 
 describe('TestEnvironmentManager', () => {
   let manager: TestEnvironmentManager;

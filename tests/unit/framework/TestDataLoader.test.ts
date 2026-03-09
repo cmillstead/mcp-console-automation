@@ -2,10 +2,10 @@
  * TestDataLoader Tests
  */
 
-import { TestDataLoader } from '../testing/TestDataLoader.js';
+import { TestDataLoader } from '../../../src/testing/TestDataLoader.js';
 import * as fs from 'fs';
 import * as path from 'path';
-import { TestFixture } from '../types/test-framework.js';
+import { TestFixture } from '../../../src/types/test-framework.js';
 
 describe('TestDataLoader', () => {
   let loader: TestDataLoader;

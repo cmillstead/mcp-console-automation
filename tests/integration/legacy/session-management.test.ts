@@ -1,6 +1,6 @@
 import { describe, beforeAll, afterAll, beforeEach, afterEach, it, expect, jest } from '@jest/globals';
-import { ConsoleManager } from '../../src/core/ConsoleManager.js';
-import { ConsoleSession, SessionOptions } from '../../src/types/index.js';
+import { ConsoleManager } from '../../../src/core/ConsoleManager.js';
+import { ConsoleSession, SessionOptions } from '../../../src/types/index.js';
 import { EventEmitter } from 'events';
 import { spawn } from 'child_process';
 import { platform } from 'os';

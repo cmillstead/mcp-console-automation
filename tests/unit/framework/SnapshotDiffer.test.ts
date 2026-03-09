@@ -3,8 +3,8 @@
  * Tests snapshot comparison and diff algorithms
  */
 
-import { SnapshotDiffer } from '../testing/SnapshotDiffer.js';
-import { SessionSnapshot } from '../types/test-framework.js';
+import { SnapshotDiffer } from '../../../src/testing/SnapshotDiffer.js';
+import { SessionSnapshot } from '../../../src/types/test-framework.js';
 
 describe('SnapshotDiffer', () => {
   let differ: SnapshotDiffer;

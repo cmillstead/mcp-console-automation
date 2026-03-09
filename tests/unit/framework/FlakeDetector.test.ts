@@ -2,8 +2,8 @@
  * Tests for FlakeDetector
  */
 
-import { FlakeDetector } from '../testing/FlakeDetector.js';
-import { TestDefinition, TestResult } from '../types/test-framework.js';
+import { FlakeDetector } from '../../../src/testing/FlakeDetector.js';
+import { TestDefinition, TestResult } from '../../../src/types/test-framework.js';
 
 describe('FlakeDetector', () => {
   let detector: FlakeDetector;

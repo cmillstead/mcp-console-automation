@@ -1,7 +1,7 @@
 import { describe, beforeAll, afterAll, beforeEach, afterEach, it, expect, jest } from '@jest/globals';
-import { ErrorDetector } from '../../src/core/ErrorDetector.js';
-import { ConsoleManager } from '../../src/core/ConsoleManager.js';
-import { ErrorPattern } from '../../src/types/index.js';
+import { ErrorDetector } from '../../../src/core/ErrorDetector.js';
+import { ConsoleManager } from '../../../src/core/ConsoleManager.js';
+import { ErrorPattern } from '../../../src/types/index.js';
 import { platform } from 'os';
 
 // Skip hardware-intensive integration tests in CI

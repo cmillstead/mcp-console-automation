@@ -2,11 +2,11 @@
  * Phase 5 Integration Tests
  */
 
-import { TestDataLoader } from '../testing/TestDataLoader.js';
-import { DataParameterizer } from '../testing/DataParameterizer.js';
-import { TestEnvironmentManager } from '../testing/TestEnvironment.js';
-import { FixtureManager } from '../testing/FixtureManager.js';
-import { Assertion } from '../types/test-framework.js';
+import { TestDataLoader } from '../../../src/testing/TestDataLoader.js';
+import { DataParameterizer } from '../../../src/testing/DataParameterizer.js';
+import { TestEnvironmentManager } from '../../../src/testing/TestEnvironment.js';
+import { FixtureManager } from '../../../src/testing/FixtureManager.js';
+import { Assertion } from '../../../src/types/test-framework.js';
 import * as path from 'path';
 
 describe('Phase 5 Integration', () => {

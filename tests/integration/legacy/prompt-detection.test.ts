@@ -1,5 +1,5 @@
 import { describe, beforeAll, afterAll, beforeEach, afterEach, it, expect, jest } from '@jest/globals';
-import { PromptDetector, PromptDetectorConfig, PromptPattern } from '../../src/core/PromptDetector.js';
+import { PromptDetector, PromptDetectorConfig, PromptPattern } from '../../../src/core/PromptDetector.js';
 
 // Skip hardware-intensive integration tests in CI
 const describeIfHardware = process.env.SKIP_HARDWARE_TESTS ? describe.skip : describe;
