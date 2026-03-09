@@ -3,6 +3,7 @@
  */
 
 import { WorkerPool, WorkerTask } from '../testing/WorkerPool.js';
+import { Assertion } from '../types/test-framework.js';
 
 describe('WorkerPool', () => {
   let pool: WorkerPool;
@@ -49,7 +50,7 @@ describe('WorkerPool', () => {
         id: 'test-1',
         test: {
           name: 'simple test',
-          assertions: [],
+          assertions: [] as Assertion[],
           timeout: 5000,
           retry: 0,
         },
@@ -70,7 +71,7 @@ describe('WorkerPool', () => {
         id: `test-${i}`,
         test: {
           name: `test ${i}`,
-          assertions: [],
+          assertions: [] as Assertion[],
           timeout: 1000,
           retry: 0,
         },
@@ -100,7 +101,7 @@ describe('WorkerPool', () => {
         id: `test-${i}`,
         test: {
           name: `test ${i}`,
-          assertions: [],
+          assertions: [] as Assertion[],
           timeout: 500,
           retry: 0,
         },
@@ -126,7 +127,7 @@ describe('WorkerPool', () => {
         id: 'timeout-test',
         test: {
           name: 'timeout test',
-          assertions: [],
+          assertions: [] as Assertion[],
           timeout: 50,
           retry: 0,
         },
@@ -151,7 +152,7 @@ describe('WorkerPool', () => {
       // Try to execute task during shutdown
       const task: WorkerTask = {
         id: 'test',
-        test: { name: 'test', assertions: [], timeout: 1000, retry: 0 },
+        test: { name: 'test', assertions: [] as Assertion[], timeout: 1000, retry: 0 },
         timeout: 1000,
       };
 
@@ -170,7 +171,7 @@ describe('WorkerPool', () => {
         id: `test-${i}`,
         test: {
           name: `test ${i}`,
-          assertions: [],
+          assertions: [] as Assertion[],
           timeout: 100,
           retry: 0,
         },
@@ -205,7 +206,7 @@ describe('WorkerPool', () => {
         id: 'long-task',
         test: {
           name: 'long test',
-          assertions: [],
+          assertions: [] as Assertion[],
           timeout: 1000,
           retry: 0,
         },

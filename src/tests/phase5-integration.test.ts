@@ -6,6 +6,7 @@ import { TestDataLoader } from '../testing/TestDataLoader.js';
 import { DataParameterizer } from '../testing/DataParameterizer.js';
 import { TestEnvironmentManager } from '../testing/TestEnvironment.js';
 import { FixtureManager } from '../testing/FixtureManager.js';
+import { Assertion } from '../types/test-framework.js';
 import * as path from 'path';
 
 describe('Phase 5 Integration', () => {
@@ -62,7 +63,7 @@ describe('Phase 5 Integration', () => {
       const parameterizer = new DataParameterizer();
       const testDef = {
         name: 'csv-driven-test',
-        assertions: [],
+        assertions: [] as Assertion[],
         timeout: 5000,
         retry: 0,
       };
@@ -194,7 +195,7 @@ describe('Phase 5 Integration', () => {
           // 5. Run parameterized tests
           const testDef = {
             name: 'complex-workflow-test',
-            assertions: [],
+            assertions: [] as Assertion[],
             timeout: 10000,
             retry: 0,
           };

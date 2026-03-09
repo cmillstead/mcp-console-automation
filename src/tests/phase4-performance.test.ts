@@ -5,6 +5,7 @@
 
 import { ParallelExecutor } from '../testing/ParallelExecutor.js';
 import {
+  Assertion,
   TestDefinition,
   ParallelExecutionConfig,
 } from '../types/test-framework.js';
@@ -24,7 +25,7 @@ describe('Phase 4 Performance', () => {
       const tests: TestDefinition[] = Array.from({ length: 12 }, (_, i) => ({
         name: `perf-test-${i}`,
         description: `Performance test ${i}`,
-        assertions: [],
+        assertions: [] as Assertion[],
         timeout: 200,
         retry: 0,
       }));
@@ -111,7 +112,7 @@ describe('Phase 4 Performance', () => {
     it('should scale with different worker counts', async () => {
       const tests: TestDefinition[] = Array.from({ length: 16 }, (_, i) => ({
         name: `scaling-test-${i}`,
-        assertions: [],
+        assertions: [] as Assertion[],
         timeout: 100,
         retry: 0,
       }));
@@ -146,7 +147,7 @@ describe('Phase 4 Performance', () => {
     it('should handle large test suite efficiently', async () => {
       const tests: TestDefinition[] = Array.from({ length: 50 }, (_, i) => ({
         name: `large-suite-test-${i}`,
-        assertions: [],
+        assertions: [] as Assertion[],
         timeout: 50,
         retry: 0,
       }));
@@ -187,7 +188,7 @@ describe('Phase 4 Performance', () => {
     it('should track execution metrics accurately', async () => {
       const tests: TestDefinition[] = Array.from({ length: 10 }, (_, i) => ({
         name: `metrics-test-${i}`,
-        assertions: [],
+        assertions: [] as Assertion[],
         timeout: 100,
         retry: 0,
       }));

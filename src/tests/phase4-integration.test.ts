@@ -8,6 +8,8 @@ import { RetryManager } from '../testing/RetryManager.js';
 import { FlakeDetector } from '../testing/FlakeDetector.js';
 import { ExecutionMetricsCollector } from '../testing/ExecutionMetrics.js';
 import {
+  Assertion,
+  AssertionResult,
   TestDefinition,
   TestResult,
   ParallelExecutionConfig,
@@ -20,9 +22,9 @@ describe('Phase 4 Integration', () => {
       const retryManager = new RetryManager();
 
       const tests: TestDefinition[] = [
-        { name: 'test-1', assertions: [], timeout: 100, retry: 0 },
-        { name: 'test-2', assertions: [], timeout: 100, retry: 0 },
-        { name: 'test-3', assertions: [], timeout: 100, retry: 0 },
+        { name: 'test-1', assertions: [] as Assertion[], timeout: 100, retry: 0 },
+        { name: 'test-2', assertions: [] as Assertion[], timeout: 100, retry: 0 },
+        { name: 'test-3', assertions: [] as Assertion[], timeout: 100, retry: 0 },
       ];
 
       const config: ParallelExecutionConfig = {
@@ -50,7 +52,7 @@ describe('Phase 4 Integration', () => {
           duration: 50,
           startTime: Date.now(),
           endTime: Date.now() + 50,
-          assertions: [],
+          assertions: [] as AssertionResult[],
         });
 
         const retryResults = await retryManager.retryFailedTests(
@@ -74,8 +76,8 @@ describe('Phase 4 Integration', () => {
       let runCount = 0;
 
       const tests: TestDefinition[] = [
-        { name: 'stable-test', assertions: [], timeout: 100, retry: 0 },
-        { name: 'flaky-test', assertions: [], timeout: 100, retry: 0 },
+        { name: 'stable-test', assertions: [] as Assertion[], timeout: 100, retry: 0 },
+        { name: 'flaky-test', assertions: [] as Assertion[], timeout: 100, retry: 0 },
       ];
 
       // Simulated test executor
@@ -92,7 +94,7 @@ describe('Phase 4 Integration', () => {
           duration: 50,
           startTime: Date.now(),
           endTime: Date.now() + 50,
-          assertions: [],
+          assertions: [] as AssertionResult[],
           error: passed ? undefined : new Error('Flaky failure'),
         };
       };
@@ -124,7 +126,7 @@ describe('Phase 4 Integration', () => {
       // Step 1: Define tests
       const tests: TestDefinition[] = Array.from({ length: 5 }, (_, i) => ({
         name: `pipeline-test-${i}`,
-        assertions: [],
+        assertions: [] as Assertion[],
         timeout: 100,
         retry: 0,
       }));
@@ -158,7 +160,7 @@ describe('Phase 4 Integration', () => {
           duration: 50,
           startTime: Date.now(),
           endTime: Date.now() + 50,
-          assertions: [],
+          assertions: [] as AssertionResult[],
         };
       };
 
@@ -191,7 +193,7 @@ describe('Phase 4 Integration', () => {
 
       const tests: TestDefinition[] = Array.from({ length: 8 }, (_, i) => ({
         name: `metrics-integration-test-${i}`,
-        assertions: [],
+        assertions: [] as Assertion[],
         timeout: 100,
         retry: 0,
       }));
@@ -217,7 +219,7 @@ describe('Phase 4 Integration', () => {
 
       // Test with invalid configuration
       const tests: TestDefinition[] = [
-        { name: 'error-test', assertions: [], timeout: 100, retry: 0 },
+        { name: 'error-test', assertions: [] as Assertion[], timeout: 100, retry: 0 },
       ];
 
       const config: ParallelExecutionConfig = {

@@ -2833,7 +2833,7 @@ export class ConsoleAutomationServer {
 
       const response = {
         jobId: args.jobId,
-        output: output.map((o) => ({
+        output: output.map((o: { type: string; data: string; timestamp: Date; sequence: number }) => ({
           type: o.type,
           data: o.data,
           timestamp: o.timestamp,

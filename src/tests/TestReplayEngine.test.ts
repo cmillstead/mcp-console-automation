@@ -4,7 +4,7 @@
 
 import { TestReplayEngine } from '../testing/TestReplayEngine.js';
 import { TestRecorder } from '../testing/TestRecorder.js';
-import { TestRecording } from '../types/test-framework.js';
+import { StepResult, TestRecording } from '../types/test-framework.js';
 import { ConsoleManager } from '../core/ConsoleManager.js';
 
 // Mock ConsoleManager
@@ -454,7 +454,7 @@ describe('TestReplayEngine', () => {
           recording: 'test-error',
           status: 'error' as const,
           duration: 100,
-          steps: [],
+          steps: [] as StepResult[],
           error: new Error('Test error message'),
         };
 

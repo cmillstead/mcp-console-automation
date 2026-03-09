@@ -171,7 +171,7 @@ export class TriggerManager extends EventEmitter {
 
     // Update metrics with next execution time
     const metrics = this.triggerMetrics.get(triggerId)!;
-    const nextRun = task.getStatus().nextExecution;
+    const nextRun = (task as unknown as { getStatus(): { nextExecution?: Date } }).getStatus().nextExecution;
     if (nextRun) {
       metrics.nextExecution = nextRun;
     }
