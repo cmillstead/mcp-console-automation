@@ -167,12 +167,8 @@ export class SSHProtocol extends BaseProtocol {
       );
       return session;
     } catch (error) {
-      try {
-        console.error(`[SSH-DEBUG] ERROR in doCreateSession: ${error}`);
-        console.error(`[SSH-DEBUG] Error stack: ${(error as Error).stack}`);
-      } catch (e) {
-        // Ignore debug errors
-      }
+      console.error(`[SSH-DEBUG] ERROR in doCreateSession: ${error}`);
+      console.error(`[SSH-DEBUG] Error stack: ${(error as Error).stack}`);
       this.logger.error(`Failed to create SSH session: ${error}`);
 
       // Cleanup on failure
