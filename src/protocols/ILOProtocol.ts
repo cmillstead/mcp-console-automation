@@ -120,9 +120,9 @@ export class ILOProtocol extends BaseProtocol {
     super('ilo');
 
     this.capabilities = {
+      ...BaseProtocol.getDefaultCapabilities(),
       supportsStreaming: true,
       supportsFileTransfer: true,
-      supportsX11Forwarding: false,
       supportsPortForwarding: true,
       supportsAuthentication: true,
       supportsEncryption: true,
@@ -138,14 +138,7 @@ export class ILOProtocol extends BaseProtocol {
       supportsPTY: true,
       maxConcurrentSessions: 5, // ILO typically supports limited concurrent sessions
       defaultTimeout: 120000, // Server operations can take time
-      supportedEncodings: ['utf-8'],
       supportedAuthMethods: ['password', 'key', 'external'],
-      platformSupport: {
-        windows: true,
-        linux: true,
-        macos: true,
-        freebsd: true,
-      },
     };
   }
 

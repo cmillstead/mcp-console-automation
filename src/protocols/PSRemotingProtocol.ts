@@ -174,10 +174,9 @@ export class PSRemotingProtocol extends BaseProtocol {
     super('psremoting');
 
     this.capabilities = {
+      ...BaseProtocol.getDefaultCapabilities(),
       supportsStreaming: true,
       supportsFileTransfer: true,
-      supportsX11Forwarding: false,
-      supportsPortForwarding: false,
       supportsAuthentication: true,
       supportsEncryption: true,
       supportsCompression: true,
@@ -188,8 +187,6 @@ export class PSRemotingProtocol extends BaseProtocol {
       supportsCustomEnvironment: true,
       supportsWorkingDirectory: true,
       supportsSignals: true,
-      supportsResizing: false,
-      supportsPTY: false,
       maxConcurrentSessions: 32, // PowerShell Remoting can handle many concurrent sessions
       defaultTimeout: 300000, // PowerShell operations can take longer
       supportedEncodings: ['utf-8', 'utf-16le', 'ascii'],
@@ -200,12 +197,6 @@ export class PSRemotingProtocol extends BaseProtocol {
         'credssp',
         'digest',
       ],
-      platformSupport: {
-        windows: true, // Primary PowerShell Remoting platform
-        linux: true, // PowerShell Core with SSH remoting
-        macos: true, // PowerShell Core with SSH remoting
-        freebsd: true,
-      },
     };
   }
 

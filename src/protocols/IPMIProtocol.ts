@@ -367,32 +367,16 @@ export class IPMIProtocol extends BaseProtocol {
     super('IPMIProtocol');
 
     this.capabilities = {
+      ...BaseProtocol.getDefaultCapabilities(),
       supportsStreaming: true,
-      supportsFileTransfer: false,
-      supportsX11Forwarding: false,
-      supportsPortForwarding: false,
       supportsAuthentication: true,
       supportsEncryption: true,
-      supportsCompression: false,
-      supportsMultiplexing: false,
       supportsKeepAlive: true,
       supportsReconnection: true,
       supportsBinaryData: true,
-      supportsCustomEnvironment: false,
-      supportsWorkingDirectory: false,
-      supportsSignals: false,
-      supportsResizing: false,
-      supportsPTY: false,
       maxConcurrentSessions: 5,
-      defaultTimeout: 30000,
       supportedEncodings: ['binary'],
       supportedAuthMethods: ['password', 'md5'],
-      platformSupport: {
-        windows: true,
-        linux: true,
-        macos: true,
-        freebsd: true,
-      },
     };
 
     this.healthStatus = {

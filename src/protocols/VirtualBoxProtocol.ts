@@ -289,6 +289,7 @@ export class VirtualBoxProtocol extends BaseProtocol {
     super('virtualbox');
 
     this.capabilities = {
+      ...BaseProtocol.getDefaultCapabilities(),
       supportsStreaming: true,
       supportsFileTransfer: true,
       supportsX11Forwarding: true,
@@ -307,14 +308,7 @@ export class VirtualBoxProtocol extends BaseProtocol {
       supportsPTY: true,
       maxConcurrentSessions: 100, // VirtualBox can run many VMs simultaneously
       defaultTimeout: 60000, // VM operations can take time
-      supportedEncodings: ['utf-8'],
       supportedAuthMethods: ['password', 'key-file'],
-      platformSupport: {
-        windows: true,
-        linux: true,
-        macos: true,
-        freebsd: true,
-      },
     };
   }
 

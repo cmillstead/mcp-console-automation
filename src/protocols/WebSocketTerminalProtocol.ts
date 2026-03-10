@@ -31,10 +31,9 @@ import { ProtocolCapabilities, SessionState } from '../core/IProtocol.js';
 export class WebSocketTerminalProtocol extends BaseProtocol {
   public readonly type: ConsoleType = 'websocket-term';
   public readonly capabilities: ProtocolCapabilities = {
+    ...BaseProtocol.getDefaultCapabilities(),
     supportsStreaming: true,
     supportsFileTransfer: true,
-    supportsX11Forwarding: false,
-    supportsPortForwarding: false,
     supportsAuthentication: true,
     supportsEncryption: true,
     supportsCompression: true,
@@ -42,16 +41,11 @@ export class WebSocketTerminalProtocol extends BaseProtocol {
     supportsKeepAlive: true,
     supportsReconnection: true,
     supportsBinaryData: true,
-    supportsCustomEnvironment: false,
-    supportsWorkingDirectory: false,
-    supportsSignals: false,
     supportsResizing: true,
     supportsPTY: true,
     maxConcurrentSessions: 20,
-    defaultTimeout: 30000,
     supportedEncodings: ['utf8'],
     supportedAuthMethods: ['token', 'password', 'certificate'],
-    platformSupport: { windows: true, linux: true, macos: true, freebsd: true },
   };
 
   private wsSessionDetails: Map<string, WebSocketTerminalSession> = new Map();

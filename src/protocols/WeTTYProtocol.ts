@@ -115,10 +115,9 @@ export class WeTTYProtocol extends BaseProtocol {
     super('WeTTYProtocol');
 
     this.capabilities = {
+      ...BaseProtocol.getDefaultCapabilities(),
       supportsStreaming: true,
       supportsFileTransfer: true,
-      supportsX11Forwarding: false,
-      supportsPortForwarding: false,
       supportsAuthentication: true,
       supportsEncryption: true,
       supportsCompression: true,
@@ -131,16 +130,8 @@ export class WeTTYProtocol extends BaseProtocol {
       supportsSignals: true,
       supportsResizing: true,
       supportsPTY: true,
-      maxConcurrentSessions: 10,
-      defaultTimeout: 30000,
       supportedEncodings: ['utf-8', 'base64'],
       supportedAuthMethods: ['password', 'oauth', 'ldap'],
-      platformSupport: {
-        windows: true,
-        linux: true,
-        macos: true,
-        freebsd: true,
-      },
     };
 
     this.healthStatus = {

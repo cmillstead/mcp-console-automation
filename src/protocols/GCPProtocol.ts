@@ -174,17 +174,14 @@ export class GCPProtocol extends BaseProtocol {
     super('gcp');
 
     this.capabilities = {
+      ...BaseProtocol.getDefaultCapabilities(),
       supportsStreaming: true,
-      supportsFileTransfer: false,
       supportsX11Forwarding: true,
       supportsPortForwarding: true,
       supportsAuthentication: true,
       supportsEncryption: true,
-      supportsCompression: false,
-      supportsMultiplexing: false,
       supportsKeepAlive: true,
       supportsReconnection: true,
-      supportsBinaryData: false,
       supportsCustomEnvironment: true,
       supportsWorkingDirectory: true,
       supportsSignals: true,
@@ -192,14 +189,7 @@ export class GCPProtocol extends BaseProtocol {
       supportsPTY: true,
       maxConcurrentSessions: 100,
       defaultTimeout: 45000,
-      supportedEncodings: ['utf-8'],
       supportedAuthMethods: ['oauth2', 'service-account', 'default'],
-      platformSupport: {
-        windows: true,
-        linux: true,
-        macos: true,
-        freebsd: true,
-      },
     };
   }
 

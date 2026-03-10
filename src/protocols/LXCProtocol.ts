@@ -106,13 +106,9 @@ export class LXCProtocol extends BaseProtocol {
     super('lxc');
 
     this.capabilities = {
+      ...BaseProtocol.getDefaultCapabilities(),
       supportsStreaming: true,
       supportsFileTransfer: true,
-      supportsX11Forwarding: false,
-      supportsPortForwarding: false,
-      supportsAuthentication: false,
-      supportsEncryption: false,
-      supportsCompression: false,
       supportsMultiplexing: true,
       supportsKeepAlive: true,
       supportsReconnection: true,
@@ -124,8 +120,6 @@ export class LXCProtocol extends BaseProtocol {
       supportsPTY: true,
       maxConcurrentSessions: 30, // LXC can handle many containers
       defaultTimeout: 60000, // Container operations can take time
-      supportedEncodings: ['utf-8'],
-      supportedAuthMethods: [],
       platformSupport: {
         windows: false, // LXC is Linux-only
         linux: true,

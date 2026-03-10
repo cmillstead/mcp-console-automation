@@ -254,32 +254,17 @@ export class VNCProtocol extends BaseProtocol {
     this.defaultOptions = { ...this.getDefaultOptions(), ...(options || {}) };
 
     this.capabilities = {
+      ...BaseProtocol.getDefaultCapabilities(),
       supportsStreaming: true,
       supportsFileTransfer: true,
-      supportsX11Forwarding: false,
-      supportsPortForwarding: false,
       supportsAuthentication: true,
       supportsEncryption: true,
       supportsCompression: true,
-      supportsMultiplexing: false,
       supportsKeepAlive: true,
       supportsReconnection: true,
       supportsBinaryData: true,
-      supportsCustomEnvironment: false,
-      supportsWorkingDirectory: false,
-      supportsSignals: false,
       supportsResizing: true,
-      supportsPTY: false,
-      maxConcurrentSessions: 10,
-      defaultTimeout: 30000,
-      supportedEncodings: ['utf-8'],
       supportedAuthMethods: ['password', 'none', 'tls', 'vencrypt'],
-      platformSupport: {
-        windows: true,
-        linux: true,
-        macos: true,
-        freebsd: true,
-      },
     };
 
     this.healthStatus = {

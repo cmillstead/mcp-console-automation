@@ -43,32 +43,18 @@ export class MySQLProtocol extends BaseProtocol {
     super('mysql');
 
     this.capabilities = {
+      ...BaseProtocol.getDefaultCapabilities(),
       supportsStreaming: true,
-      supportsFileTransfer: false,
-      supportsX11Forwarding: false,
-      supportsPortForwarding: false,
       supportsAuthentication: true,
       supportsEncryption: true,
-      supportsCompression: false,
-      supportsMultiplexing: false,
       supportsKeepAlive: true,
       supportsReconnection: true,
-      supportsBinaryData: false,
       supportsCustomEnvironment: true,
       supportsWorkingDirectory: true,
       supportsSignals: true,
-      supportsResizing: false,
-      supportsPTY: false,
       maxConcurrentSessions: 50,
-      defaultTimeout: 30000,
       supportedEncodings: ['utf-8', 'latin1', 'ascii'],
       supportedAuthMethods: ['password', 'ssl'],
-      platformSupport: {
-        windows: true,
-        linux: true,
-        macos: true,
-        freebsd: true,
-      },
     };
   }
 

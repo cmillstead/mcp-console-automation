@@ -136,15 +136,12 @@ export class DockerProtocol extends BaseProtocol {
     this.config = config;
 
     this.capabilities = {
+      ...BaseProtocol.getDefaultCapabilities(),
       supportsStreaming: true,
       supportsFileTransfer: true,
-      supportsX11Forwarding: false,
       supportsPortForwarding: true,
       supportsAuthentication: true,
-      supportsEncryption: false,
-      supportsCompression: false,
       supportsMultiplexing: true,
-      supportsKeepAlive: false,
       supportsReconnection: true,
       supportsBinaryData: true,
       supportsCustomEnvironment: true,
@@ -153,15 +150,8 @@ export class DockerProtocol extends BaseProtocol {
       supportsResizing: true,
       supportsPTY: true,
       maxConcurrentSessions: 100,
-      defaultTimeout: 30000,
       supportedEncodings: ['utf-8', 'binary'],
       supportedAuthMethods: ['registry-auth'],
-      platformSupport: {
-        windows: true,
-        linux: true,
-        macos: true,
-        freebsd: true,
-      },
     };
   }
 

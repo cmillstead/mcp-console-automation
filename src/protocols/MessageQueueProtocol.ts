@@ -128,9 +128,8 @@ export class MessageQueueProtocol extends BaseProtocol {
     super('messagequeue');
 
     this.capabilities = {
+      ...BaseProtocol.getDefaultCapabilities(),
       supportsStreaming: true,
-      supportsFileTransfer: false,
-      supportsX11Forwarding: false,
       supportsPortForwarding: true,
       supportsAuthentication: true,
       supportsEncryption: true,
@@ -142,18 +141,9 @@ export class MessageQueueProtocol extends BaseProtocol {
       supportsCustomEnvironment: true,
       supportsWorkingDirectory: true,
       supportsSignals: true,
-      supportsResizing: false,
-      supportsPTY: false,
       maxConcurrentSessions: 100, // Message queues can handle many connections
-      defaultTimeout: 30000, // Network operations can take time
       supportedEncodings: ['utf-8', 'binary'],
       supportedAuthMethods: ['plain', 'sasl', 'oauth', 'certificate'],
-      platformSupport: {
-        windows: true,
-        linux: true,
-        macos: true,
-        freebsd: true,
-      },
     };
   }
 

@@ -120,12 +120,10 @@ export class NamedPipeProtocol extends BaseProtocol {
     super('named-pipe');
 
     this.capabilities = {
+      ...BaseProtocol.getDefaultCapabilities(),
       supportsStreaming: true,
       supportsFileTransfer: true,
-      supportsX11Forwarding: false,
-      supportsPortForwarding: false,
       supportsAuthentication: true,
-      supportsEncryption: false,
       supportsCompression: true,
       supportsMultiplexing: true,
       supportsKeepAlive: true,
@@ -133,19 +131,9 @@ export class NamedPipeProtocol extends BaseProtocol {
       supportsBinaryData: true,
       supportsCustomEnvironment: true,
       supportsWorkingDirectory: true,
-      supportsSignals: false,
-      supportsResizing: false,
-      supportsPTY: false,
       maxConcurrentSessions: 50, // Named pipes can handle multiple instances
-      defaultTimeout: 30000, // IPC operations are typically fast
       supportedEncodings: ['utf-8', 'ascii', 'binary'],
       supportedAuthMethods: ['pipe', 'acl'],
-      platformSupport: {
-        windows: true, // Primary named pipe support
-        linux: true, // FIFO support
-        macos: true, // FIFO support
-        freebsd: true, // FIFO support
-      },
     };
   }
 

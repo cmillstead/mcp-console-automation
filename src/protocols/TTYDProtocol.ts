@@ -232,9 +232,9 @@ export class TTYDProtocol extends BaseProtocol {
     super('ttyd');
 
     this.capabilities = {
+      ...BaseProtocol.getDefaultCapabilities(),
       supportsStreaming: true,
       supportsFileTransfer: true,
-      supportsX11Forwarding: false,
       supportsPortForwarding: true,
       supportsAuthentication: true,
       supportsEncryption: true,
@@ -249,15 +249,7 @@ export class TTYDProtocol extends BaseProtocol {
       supportsResizing: true,
       supportsPTY: true,
       maxConcurrentSessions: 1000, // TTYD can handle many web terminal sessions
-      defaultTimeout: 30000, // Web terminal operations
-      supportedEncodings: ['utf-8'],
       supportedAuthMethods: ['basic', 'bearer', 'custom'],
-      platformSupport: {
-        windows: true, // TTYD supports Windows through WSL/MinGW
-        linux: true,
-        macos: true,
-        freebsd: true,
-      },
     };
   }
 

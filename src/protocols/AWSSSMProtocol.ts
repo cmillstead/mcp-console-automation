@@ -310,13 +310,12 @@ export class AWSSSMProtocol extends BaseProtocol {
     super('AWSSSMProtocol');
 
     this.capabilities = {
+      ...BaseProtocol.getDefaultCapabilities(),
       supportsStreaming: true,
       supportsFileTransfer: true,
-      supportsX11Forwarding: false,
       supportsPortForwarding: true,
       supportsAuthentication: true,
       supportsEncryption: true,
-      supportsCompression: false,
       supportsMultiplexing: true,
       supportsKeepAlive: true,
       supportsReconnection: true,
@@ -326,9 +325,7 @@ export class AWSSSMProtocol extends BaseProtocol {
       supportsSignals: true,
       supportsResizing: true,
       supportsPTY: true,
-      maxConcurrentSessions: 10,
       defaultTimeout: 60000,
-      supportedEncodings: ['utf-8'],
       supportedAuthMethods: ['aws-credentials', 'iam-role', 'instance-profile'],
       platformSupport: {
         windows: true,

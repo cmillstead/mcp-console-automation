@@ -135,32 +135,21 @@ export class PSExecProtocol extends BaseProtocol {
     super('psexec');
 
     this.capabilities = {
+      ...BaseProtocol.getDefaultCapabilities(),
       supportsStreaming: true,
       supportsFileTransfer: true,
-      supportsX11Forwarding: false,
-      supportsPortForwarding: false,
       supportsAuthentication: true,
       supportsEncryption: true,
       supportsCompression: true,
-      supportsMultiplexing: false,
       supportsKeepAlive: true,
       supportsReconnection: true,
       supportsBinaryData: true,
       supportsCustomEnvironment: true,
       supportsWorkingDirectory: true,
       supportsSignals: true,
-      supportsResizing: false,
-      supportsPTY: false,
-      maxConcurrentSessions: 10, // PSExec can handle multiple remote sessions
       defaultTimeout: 120000, // Remote operations can take longer
       supportedEncodings: ['utf-8', 'utf-16', 'ascii'],
       supportedAuthMethods: ['ntlm', 'kerberos', 'credSSP'],
-      platformSupport: {
-        windows: true, // Primary PSExec platform
-        linux: true, // Via Wine or alternatives
-        macos: true, // Via Wine or alternatives
-        freebsd: true,
-      },
     };
   }
 

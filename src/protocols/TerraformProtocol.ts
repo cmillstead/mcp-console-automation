@@ -86,32 +86,17 @@ export class TerraformProtocol extends BaseProtocol {
     super('terraform');
 
     this.capabilities = {
+      ...BaseProtocol.getDefaultCapabilities(),
       supportsStreaming: true,
-      supportsFileTransfer: false,
-      supportsX11Forwarding: false,
-      supportsPortForwarding: false,
       supportsAuthentication: true,
-      supportsEncryption: false,
-      supportsCompression: false,
-      supportsMultiplexing: false,
       supportsKeepAlive: true,
       supportsReconnection: true,
-      supportsBinaryData: false,
       supportsCustomEnvironment: true,
       supportsWorkingDirectory: true,
       supportsSignals: true,
-      supportsResizing: false,
       supportsPTY: true,
-      maxConcurrentSessions: 10,
       defaultTimeout: 300000, // Terraform operations can take very long
-      supportedEncodings: ['utf-8'],
       supportedAuthMethods: ['api-key', 'service-account'],
-      platformSupport: {
-        windows: true,
-        linux: true,
-        macos: true,
-        freebsd: true,
-      },
     };
   }
 

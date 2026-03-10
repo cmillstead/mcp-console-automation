@@ -222,12 +222,10 @@ export class UnixSocketProtocol extends BaseProtocol {
     super('unix-socket');
 
     this.capabilities = {
+      ...BaseProtocol.getDefaultCapabilities(),
       supportsStreaming: true,
       supportsFileTransfer: true,
-      supportsX11Forwarding: false,
-      supportsPortForwarding: false,
       supportsAuthentication: true,
-      supportsEncryption: false, // Unix sockets are local, security through filesystem permissions
       supportsCompression: true,
       supportsMultiplexing: true,
       supportsKeepAlive: true,
@@ -236,10 +234,7 @@ export class UnixSocketProtocol extends BaseProtocol {
       supportsCustomEnvironment: true,
       supportsWorkingDirectory: true,
       supportsSignals: true,
-      supportsResizing: false,
-      supportsPTY: false,
       maxConcurrentSessions: 1000, // Unix sockets can handle many connections
-      defaultTimeout: 30000, // Socket operations
       supportedEncodings: ['utf-8', 'ascii', 'binary', 'base64', 'hex'],
       supportedAuthMethods: ['file-permissions', 'process-credentials'],
       platformSupport: {

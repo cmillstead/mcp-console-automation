@@ -206,10 +206,9 @@ export class SPICEProtocol extends BaseProtocol {
     super('spice');
 
     this.capabilities = {
+      ...BaseProtocol.getDefaultCapabilities(),
       supportsStreaming: true,
       supportsFileTransfer: true,
-      supportsX11Forwarding: false,
-      supportsPortForwarding: false,
       supportsAuthentication: true,
       supportsEncryption: true,
       supportsCompression: true,
@@ -221,17 +220,8 @@ export class SPICEProtocol extends BaseProtocol {
       supportsWorkingDirectory: true,
       supportsSignals: true,
       supportsResizing: true,
-      supportsPTY: false,
-      maxConcurrentSessions: 10, // SPICE can handle multiple sessions
       defaultTimeout: 60000, // Remote desktop connections can take time
-      supportedEncodings: ['utf-8'],
       supportedAuthMethods: ['password', 'ticket', 'certificate'],
-      platformSupport: {
-        windows: true,
-        linux: true,
-        macos: true,
-        freebsd: true,
-      },
     };
   }
 

@@ -375,13 +375,11 @@ export class QEMUProtocol extends BaseProtocol {
     super('qemu');
 
     this.capabilities = {
+      ...BaseProtocol.getDefaultCapabilities(),
       supportsStreaming: true,
       supportsFileTransfer: true,
-      supportsX11Forwarding: false,
       supportsPortForwarding: true,
-      supportsAuthentication: false,
       supportsEncryption: true,
-      supportsCompression: false,
       supportsMultiplexing: true,
       supportsKeepAlive: true,
       supportsReconnection: true,
@@ -393,14 +391,7 @@ export class QEMUProtocol extends BaseProtocol {
       supportsPTY: true,
       maxConcurrentSessions: 50, // QEMU can run multiple VMs
       defaultTimeout: 120000, // VM operations can take time
-      supportedEncodings: ['utf-8'],
       supportedAuthMethods: ['none'],
-      platformSupport: {
-        windows: true,
-        linux: true,
-        macos: true,
-        freebsd: true,
-      },
     };
   }
 

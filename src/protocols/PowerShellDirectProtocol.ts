@@ -179,10 +179,9 @@ export class PowerShellDirectProtocol extends BaseProtocol {
     super('powershelldirect');
 
     this.capabilities = {
+      ...BaseProtocol.getDefaultCapabilities(),
       supportsStreaming: true,
       supportsFileTransfer: true,
-      supportsX11Forwarding: false,
-      supportsPortForwarding: false,
       supportsAuthentication: true,
       supportsEncryption: true,
       supportsCompression: true,
@@ -192,9 +191,6 @@ export class PowerShellDirectProtocol extends BaseProtocol {
       supportsBinaryData: true,
       supportsCustomEnvironment: true,
       supportsWorkingDirectory: true,
-      supportsSignals: false,
-      supportsResizing: false,
-      supportsPTY: false,
       maxConcurrentSessions: 32, // PowerShell Direct session limit
       defaultTimeout: 60000, // Remote operations can take time
       supportedEncodings: ['utf-8', 'utf-16'],

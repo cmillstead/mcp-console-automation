@@ -109,10 +109,10 @@ export class GuacamoleProtocol extends BaseProtocol {
     super('guacamole');
 
     this.capabilities = {
+      ...BaseProtocol.getDefaultCapabilities(),
       supportsStreaming: true,
       supportsFileTransfer: true,
       supportsX11Forwarding: true,
-      supportsPortForwarding: false,
       supportsAuthentication: true,
       supportsEncryption: true,
       supportsCompression: true,
@@ -127,14 +127,7 @@ export class GuacamoleProtocol extends BaseProtocol {
       supportsPTY: true,
       maxConcurrentSessions: 50, // Guacamole can handle many concurrent sessions
       defaultTimeout: 300000, // Remote desktop sessions can be long
-      supportedEncodings: ['utf-8'],
       supportedAuthMethods: ['password', 'key', 'domain'],
-      platformSupport: {
-        windows: true,
-        linux: true,
-        macos: true,
-        freebsd: true,
-      },
     };
   }
 

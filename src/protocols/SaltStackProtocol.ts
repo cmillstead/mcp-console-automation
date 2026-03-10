@@ -323,10 +323,9 @@ export class SaltStackProtocol extends BaseProtocol {
     super('saltstack');
 
     this.capabilities = {
+      ...BaseProtocol.getDefaultCapabilities(),
       supportsStreaming: true,
       supportsFileTransfer: true,
-      supportsX11Forwarding: false,
-      supportsPortForwarding: false,
       supportsAuthentication: true,
       supportsEncryption: true,
       supportsCompression: true,
@@ -341,14 +340,7 @@ export class SaltStackProtocol extends BaseProtocol {
       supportsPTY: true,
       maxConcurrentSessions: 100, // Salt can manage many minions
       defaultTimeout: 300000, // Salt operations can take time
-      supportedEncodings: ['utf-8'],
       supportedAuthMethods: ['key', 'password', 'auto'],
-      platformSupport: {
-        windows: true,
-        linux: true,
-        macos: true,
-        freebsd: true,
-      },
     };
   }
 

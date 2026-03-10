@@ -92,11 +92,10 @@ export class ContainerdProtocol extends BaseProtocol {
     super('containerd');
 
     this.capabilities = {
+      ...BaseProtocol.getDefaultCapabilities(),
       supportsStreaming: true,
       supportsFileTransfer: true,
-      supportsX11Forwarding: false,
       supportsPortForwarding: true,
-      supportsAuthentication: false,
       supportsEncryption: true,
       supportsCompression: true,
       supportsMultiplexing: true,
@@ -110,7 +109,6 @@ export class ContainerdProtocol extends BaseProtocol {
       supportsPTY: true,
       maxConcurrentSessions: 100, // Containerd can handle many containers
       defaultTimeout: 60000, // Container operations can take time
-      supportedEncodings: ['utf-8'],
       supportedAuthMethods: ['registry'],
       platformSupport: {
         windows: true, // Windows containers

@@ -50,27 +50,15 @@ const inflateAsync = promisify(inflate);
 export class IPCProtocol extends BaseProtocol {
   public readonly type: ConsoleType = 'ipc';
   public readonly capabilities: ProtocolCapabilities = {
+    ...BaseProtocol.getDefaultCapabilities(),
     supportsStreaming: true,
-    supportsFileTransfer: false,
-    supportsX11Forwarding: false,
-    supportsPortForwarding: false,
-    supportsAuthentication: false,
     supportsEncryption: true,
     supportsCompression: true,
-    supportsMultiplexing: false,
     supportsKeepAlive: true,
     supportsReconnection: true,
     supportsBinaryData: true,
-    supportsCustomEnvironment: false,
-    supportsWorkingDirectory: false,
-    supportsSignals: false,
-    supportsResizing: false,
-    supportsPTY: false,
     maxConcurrentSessions: 50,
-    defaultTimeout: 30000,
     supportedEncodings: ['utf8', 'binary'],
-    supportedAuthMethods: [],
-    platformSupport: { windows: true, linux: true, macos: true, freebsd: true },
   };
 
   private options: IPCConnectionOptions;

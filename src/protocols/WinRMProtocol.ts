@@ -61,10 +61,9 @@ export class WinRMProtocol extends BaseProtocol {
     super('WinRMProtocol');
 
     this.capabilities = {
+      ...BaseProtocol.getDefaultCapabilities(),
       supportsStreaming: true,
       supportsFileTransfer: true,
-      supportsX11Forwarding: false,
-      supportsPortForwarding: false,
       supportsAuthentication: true,
       supportsEncryption: true,
       supportsCompression: true,
@@ -74,11 +73,6 @@ export class WinRMProtocol extends BaseProtocol {
       supportsBinaryData: true,
       supportsCustomEnvironment: true,
       supportsWorkingDirectory: true,
-      supportsSignals: false,
-      supportsResizing: false,
-      supportsPTY: false,
-      maxConcurrentSessions: 10,
-      defaultTimeout: 30000,
       supportedEncodings: ['utf-8', 'base64'],
       supportedAuthMethods: [
         'basic',

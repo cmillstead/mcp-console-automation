@@ -51,32 +51,15 @@ export class LocalProtocol extends BaseProtocol {
     this.type = type;
 
     this.capabilities = {
+      ...BaseProtocol.getDefaultCapabilities(),
       supportsStreaming: true,
-      supportsFileTransfer: false,
-      supportsX11Forwarding: false,
-      supportsPortForwarding: false,
-      supportsAuthentication: false,
-      supportsEncryption: false,
-      supportsCompression: false,
-      supportsMultiplexing: false,
-      supportsKeepAlive: false,
-      supportsReconnection: false,
-      supportsBinaryData: false,
       supportsCustomEnvironment: true,
       supportsWorkingDirectory: true,
       supportsSignals: true,
       supportsResizing: true,
       supportsPTY: true,
       maxConcurrentSessions: 50,
-      defaultTimeout: 30000,
       supportedEncodings: ['utf-8', 'ascii'],
-      supportedAuthMethods: [],
-      platformSupport: {
-        windows: true,
-        linux: true,
-        macos: true,
-        freebsd: true,
-      },
     };
   }
 

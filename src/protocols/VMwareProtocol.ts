@@ -304,6 +304,7 @@ export class VMwareProtocol extends BaseProtocol {
     super('vmware');
 
     this.capabilities = {
+      ...BaseProtocol.getDefaultCapabilities(),
       supportsStreaming: true,
       supportsFileTransfer: true,
       supportsX11Forwarding: true,
@@ -322,7 +323,6 @@ export class VMwareProtocol extends BaseProtocol {
       supportsPTY: true,
       maxConcurrentSessions: 1000, // VMware enterprise can handle many VMs
       defaultTimeout: 120000, // VM operations can take significant time
-      supportedEncodings: ['utf-8'],
       supportedAuthMethods: ['password', 'certificate', 'kerberos', 'saml'],
       platformSupport: {
         windows: true,

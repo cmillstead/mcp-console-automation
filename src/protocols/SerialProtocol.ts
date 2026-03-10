@@ -50,32 +50,12 @@ export class SerialProtocol extends BaseProtocol {
     super('SerialProtocol');
 
     this.capabilities = {
+      ...BaseProtocol.getDefaultCapabilities(),
       supportsStreaming: true,
-      supportsFileTransfer: false,
-      supportsX11Forwarding: false,
-      supportsPortForwarding: false,
-      supportsAuthentication: false,
-      supportsEncryption: false,
-      supportsCompression: false,
-      supportsMultiplexing: false,
-      supportsKeepAlive: false,
       supportsReconnection: true,
       supportsBinaryData: true,
-      supportsCustomEnvironment: false,
-      supportsWorkingDirectory: false,
       supportsSignals: true,
-      supportsResizing: false,
-      supportsPTY: false,
-      maxConcurrentSessions: 10,
-      defaultTimeout: 30000,
       supportedEncodings: ['utf-8', 'ascii', 'binary'],
-      supportedAuthMethods: [],
-      platformSupport: {
-        windows: true,
-        linux: true,
-        macos: true,
-        freebsd: true,
-      },
     };
 
     // Health status will be managed by getHealthStatus() method

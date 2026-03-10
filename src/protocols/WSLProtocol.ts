@@ -40,14 +40,11 @@ export class WSLProtocol extends BaseProtocol {
   public readonly type: ConsoleType = 'wsl';
 
   public readonly capabilities: ProtocolCapabilities = {
+    ...BaseProtocol.getDefaultCapabilities(),
     supportsStreaming: true,
     supportsFileTransfer: true,
     supportsX11Forwarding: true,
     supportsPortForwarding: true,
-    supportsAuthentication: false,
-    supportsEncryption: false,
-    supportsCompression: false,
-    supportsMultiplexing: false,
     supportsKeepAlive: true,
     supportsReconnection: true,
     supportsBinaryData: true,
@@ -57,9 +54,7 @@ export class WSLProtocol extends BaseProtocol {
     supportsResizing: true,
     supportsPTY: true,
     maxConcurrentSessions: 20,
-    defaultTimeout: 30000,
     supportedEncodings: ['utf8'],
-    supportedAuthMethods: [],
     platformSupport: { windows: true, linux: false, macos: false, freebsd: false },
   };
 
