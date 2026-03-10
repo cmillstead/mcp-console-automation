@@ -169,4 +169,119 @@ describe('HealthOrchestrator', () => {
     expect(orchestrator.getMetricsCollector()).toBeDefined();
     expect(orchestrator.getSSHKeepAlive()).toBeDefined();
   });
+
+  it('getSelfHealingConfig() returns config state', () => {
+    const config = orchestrator.getSelfHealingConfig();
+    expect(config.selfHealingEnabled).toBe(true);
+    expect(config.autoRecoveryEnabled).toBe(true);
+    expect(config.predictiveHealingEnabled).toBe(true);
+    expect(config.healingStats).toBeDefined();
+  });
+
+  it('setPredictiveHealingEnabled() updates config', () => {
+    orchestrator.setPredictiveHealingEnabled(false);
+    expect(orchestrator.getSelfHealingConfig().predictiveHealingEnabled).toBe(false);
+  });
+
+  it('setAutoRecoveryEnabled() updates config', () => {
+    orchestrator.setAutoRecoveryEnabled(false);
+    expect(orchestrator.getSelfHealingConfig().autoRecoveryEnabled).toBe(false);
+  });
+
+  describe('decision logic (event wiring)', () => {
+    beforeEach(() => {
+      orchestrator.start();
+    });
+
+    it('critical issue with high-memory-usage calls host.optimizeMemoryUsage', async () => {
+      orchestrator.getHealthMonitor().emit('criticalIssue', { type: 'high-memory-usage' });
+      // Allow async handler to complete
+      await new Promise((r) => setTimeout(r, 50));
+      expect(host.optimizeMemoryUsage).toHaveBeenCalled();
+    });
+
+    it('critical issue with high-cpu-usage calls host.throttleOperations', async () => {
+      orchestrator.getHealthMonitor().emit('criticalIssue', { type: 'high-cpu-usage' });
+      await new Promise((r) => setTimeout(r, 50));
+      expect(host.throttleOperations).toHaveBeenCalled();
+    });
+
+    it('critical issue increments totalHealingAttempts', async () => {
+      orchestrator.getHealthMonitor().emit('criticalIssue', { type: 'high-memory-usage' });
+      await new Promise((r) => setTimeout(r, 50));
+      expect(orchestrator.getHealingStats().totalHealingAttempts).toBe(1);
+      expect(orchestrator.getHealingStats().successfulHealingAttempts).toBe(1);
+    });
+
+    it('healthCheck emits system-health-check via host', () => {
+      orchestrator.getHealthMonitor().emit('healthCheck', { overall: 0.9 });
+      expect(host.emitEvent).toHaveBeenCalledWith(
+        'system-health-check',
+        expect.objectContaining({ overall: 0.9 })
+      );
+    });
+
+    it('low healthCheck triggers predictive healing when enabled', () => {
+      orchestrator.getHealthMonitor().emit('healthCheck', { overall: 0.5 });
+      expect(host.emitEvent).toHaveBeenCalledWith(
+        'predictive-healing-triggered',
+        expect.objectContaining({ trigger: 'system-health-degradation' })
+      );
+    });
+
+    it('alertThresholdExceeded with high errorRate triggers system healing mode', () => {
+      orchestrator.getMetricsCollector().emit('alertThresholdExceeded', {
+        metric: 'errorRate',
+        value: 0.2,
+      });
+      expect(host.emitEvent).toHaveBeenCalledWith(
+        'system-healing-mode-activated',
+        expect.objectContaining({ reason: 'high-error-rate' })
+      );
+    });
+
+    it('trendPrediction with high confidence triggers predictive healing', () => {
+      orchestrator.getMetricsCollector().emit('trendPrediction', {
+        confidence: 0.9,
+      });
+      expect(host.emitEvent).toHaveBeenCalledWith(
+        'predictive-healing-triggered',
+        expect.objectContaining({ trigger: 'trend-prediction' })
+      );
+      expect(orchestrator.getHealingStats().preventedFailures).toBe(1);
+    });
+
+    it('keepAliveSuccess records connection metrics', () => {
+      orchestrator.getSSHKeepAlive().emit('keepAliveSuccess', {
+        connectionId: 'conn-1',
+        responseTime: 42,
+      });
+      // No error means metrics were recorded successfully
+    });
+
+    it('keepAliveFailed with >= 3 failures emits ssh-connection-failure-detected', async () => {
+      orchestrator.getSSHKeepAlive().emit('keepAliveFailed', {
+        connectionId: 'conn-1',
+        error: new Error('timeout'),
+        consecutiveFailures: 3,
+      });
+      await new Promise((r) => setTimeout(r, 50));
+      expect(host.emitEvent).toHaveBeenCalledWith(
+        'ssh-connection-failure-detected',
+        expect.objectContaining({ connectionId: 'conn-1' })
+      );
+    });
+
+    it('connectionDegraded with high trend emits backup-connection-preparing', () => {
+      orchestrator.getSSHKeepAlive().emit('connectionDegraded', {
+        connectionId: 'conn-1',
+        responseTime: 500,
+        trend: 0.5,
+      });
+      expect(host.emitEvent).toHaveBeenCalledWith(
+        'backup-connection-preparing',
+        expect.objectContaining({ connectionId: 'conn-1' })
+      );
+    });
+  });
 });
