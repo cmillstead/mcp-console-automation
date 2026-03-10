@@ -252,6 +252,30 @@ export class HealthOrchestrator extends EventEmitter {
     return this.sshKeepAlive;
   }
 
+  setPredictiveHealingEnabled(enabled: boolean): void {
+    this.config.predictiveHealingEnabled = enabled;
+    this.logger.info(`Predictive healing ${enabled ? 'enabled' : 'disabled'}`);
+  }
+
+  setAutoRecoveryEnabled(enabled: boolean): void {
+    this.config.autoRecoveryEnabled = enabled;
+    this.logger.info(`Auto-recovery ${enabled ? 'enabled' : 'disabled'}`);
+  }
+
+  getSelfHealingConfig(): {
+    selfHealingEnabled: boolean;
+    autoRecoveryEnabled: boolean;
+    predictiveHealingEnabled: boolean;
+    healingStats: typeof this.healingStats;
+  } {
+    return {
+      selfHealingEnabled: this.config.selfHealingEnabled,
+      autoRecoveryEnabled: this.config.autoRecoveryEnabled,
+      predictiveHealingEnabled: this.config.predictiveHealingEnabled,
+      healingStats: { ...this.healingStats },
+    };
+  }
+
   /**
    * Start all health monitoring: wire events, start monitors,
    * begin network metrics collection.

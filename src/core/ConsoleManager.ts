@@ -282,13 +282,6 @@ export class ConsoleManager
 
   private autoRecoveryEnabled = true;
   private predictiveHealingEnabled = true;
-  private healingStats = {
-    totalHealingAttempts: 0,
-    successfulHealingAttempts: 0,
-    preventedFailures: 0,
-    automaticRecoveries: 0,
-    proactiveReconnections: 0,
-  };
 
   constructor(config?: {
     connectionPooling?: ConnectionPoolingOptions;
@@ -1159,103 +1152,10 @@ export class ConsoleManager
 
   // setupSelfHealingIntegration() — removed, now in HealthOrchestrator.setupEventWiring()
 
-  private async handleCriticalSystemIssue(issue: { type: string }): Promise<void> {
-    this.logger.info(
-      `Attempting to handle critical system issue: ${issue.type}`
-    );
-
-    switch (issue.type) {
-      case 'high-memory-usage':
-        await this.optimizeMemoryUsage();
-        break;
-      case 'high-cpu-usage':
-        await this.throttleOperations();
-        break;
-      case 'disk-space-low':
-        await this.cleanupTemporaryFiles();
-        break;
-      case 'network-degradation':
-        await this.optimizeNetworkConnections();
-        break;
-      default:
-        this.logger.warn(`No specific handler for issue type: ${issue.type}`);
-    }
-  }
-
-  private async initiateSessionRecovery(
-    sessionId: string,
-    reason: string
-  ): Promise<void> {
-    this.logger.info(
-      `Initiating session recovery for ${sessionId}, reason: ${reason}`
-    );
-
-    const session = this.sessions.get(sessionId);
-    if (session) {
-      await this.sessionRecovery.recoverSession(sessionId, reason);
-    }
-  }
-
-  private triggerPredictiveHealing(trigger: string, data: unknown): void {
-    this.logger.info(`Predictive healing triggered: ${trigger}`, data);
-    this.emit('predictive-healing-triggered', {
-      trigger,
-      data,
-      timestamp: new Date(),
-    });
-  }
-
-  private triggerSystemHealingMode(reason: string): void {
-    this.logger.warn(`System healing mode activated: ${reason}`);
-    // Implement system-wide healing actions
-    this.emit('system-healing-mode-activated', {
-      reason,
-      timestamp: new Date(),
-    });
-  }
-
-  private enhanceSessionMonitoring(): void {
-    // Reduce heartbeat intervals for closer monitoring
-    // Note: HeartbeatMonitor doesn't have setAdaptiveMode method
-    // this.heartbeatMonitor.setAdaptiveMode(true);
-    this.logger.info('Enhanced session monitoring activated');
-  }
-
-  private async handleSSHConnectionFailure(
-    connectionId: string,
-    error: Error
-  ): Promise<void> {
-    this.logger.info(`Handling SSH connection failure: ${connectionId}`);
-
-    // Use connection pool's circuit breaker and retry logic
-    // Note: handleConnectionFailure is private in ConnectionPool
-    try {
-      // await this.connectionPool.handleConnectionFailure(connectionId, error);
-      this.logger.info(
-        `Connection failure handled for ${connectionId}: ${error.message}`
-      );
-      this.emit('ssh-connection-failure-detected', { connectionId, error });
-    } catch (poolError) {
-      this.logger.error(
-        'Connection pool failed to handle SSH connection failure:',
-        poolError
-      );
-      this.emit('ssh-connection-recovery-failed', {
-        connectionId,
-        originalError: error,
-        poolError,
-      });
-    }
-  }
-
-  private prepareBackupSSHConnection(connectionId: string): void {
-    this.logger.info(`Preparing backup SSH connection for ${connectionId}`);
-    // Logic to preemptively establish backup connections
-    this.emit('backup-connection-preparing', {
-      connectionId,
-      timestamp: new Date(),
-    });
-  }
+  // Decision methods (handleCriticalSystemIssue, initiateSessionRecovery,
+  // triggerPredictiveHealing, triggerSystemHealingMode, enhanceSessionMonitoring,
+  // handleSSHConnectionFailure, prepareBackupSSHConnection) moved to
+  // HealthOrchestrator.setupEventWiring() in Phase B.
 
   private async optimizeMemoryUsage(): Promise<void> {
     this.logger.info('Optimizing memory usage');
@@ -2703,14 +2603,14 @@ export class ConsoleManager
     sessionHealth: Map<string, any>;
     connectionHealth: Map<string, any>;
     metrics: unknown;
-    healingStats: typeof this.healingStats;
+    healingStats: ReturnType<HealthOrchestrator['getHealingStats']>;
   }> {
     const result = {
       systemHealth: null as unknown,
       sessionHealth: new Map<string, any>(),
       connectionHealth: new Map<string, any>(),
       metrics: null as unknown,
-      healingStats: { ...this.healingStats },
+      healingStats: this.healthOrchestrator.getHealingStats(),
     };
 
     if (this.selfHealingEnabled) {
@@ -2794,39 +2694,14 @@ export class ConsoleManager
     }
   }
 
-  /**
-   * Enable or disable predictive healing
-   */
   public setPredictiveHealingEnabled(enabled: boolean): void {
     this.predictiveHealingEnabled = enabled;
-
-    if (this.selfHealingEnabled) {
-      // Update components with new predictive setting
-      // Note: These methods don't exist on the monitoring classes
-      // Predictive analysis is configured during component initialization
-      this.logger.debug(
-        `Predictive healing setting updated but requires component restart to take effect`
-      );
-    }
-
-    this.logger.info(`Predictive healing ${enabled ? 'enabled' : 'disabled'}`);
+    this.healthOrchestrator.setPredictiveHealingEnabled(enabled);
   }
 
-  /**
-   * Enable or disable automatic recovery
-   */
   public setAutoRecoveryEnabled(enabled: boolean): void {
     this.autoRecoveryEnabled = enabled;
-
-    if (this.selfHealingEnabled) {
-      // Note: setAutoRecoveryEnabled method doesn't exist on HealthMonitor
-      // Auto recovery is configured during initialization via config.recovery.enabled
-      this.logger.debug(
-        `Auto recovery setting updated but requires component restart to take effect`
-      );
-    }
-
-    this.logger.info(`Auto-recovery ${enabled ? 'enabled' : 'disabled'}`);
+    this.healthOrchestrator.setAutoRecoveryEnabled(enabled);
   }
 
   /**
@@ -2930,18 +2805,8 @@ export class ConsoleManager
   /**
    * Get current self-healing configuration
    */
-  public getSelfHealingConfig(): {
-    selfHealingEnabled: boolean;
-    autoRecoveryEnabled: boolean;
-    predictiveHealingEnabled: boolean;
-    healingStats: ReturnType<HealthOrchestrator['getHealingStats']>;
-  } {
-    return {
-      selfHealingEnabled: this.selfHealingEnabled,
-      autoRecoveryEnabled: this.autoRecoveryEnabled,
-      predictiveHealingEnabled: this.predictiveHealingEnabled,
-      healingStats: this.healthOrchestrator.getHealingStats(),
-    };
+  public getSelfHealingConfig(): ReturnType<HealthOrchestrator['getSelfHealingConfig']> {
+    return this.healthOrchestrator.getSelfHealingConfig();
   }
 
   // shutdownSelfHealingComponents() — removed, now in HealthOrchestrator.stop()
