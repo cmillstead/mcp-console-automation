@@ -162,9 +162,15 @@ describe('FlakeDetector', () => {
         { name: 'flaky-2', assertions: [], timeout: 100, retry: 0 },
       ];
 
+      // Use deterministic call counts per test instead of Math.random()
+      const callCounts = new Map<string, number>();
       const executor = async (t: TestDefinition): Promise<TestResult> => {
+        const count = (callCounts.get(t.name) || 0) + 1;
+        callCounts.set(t.name, count);
+
         const isFlaky = t.name.includes('flaky');
-        const passed = !isFlaky || Math.random() > 0.3;
+        // Flaky tests alternate pass/fail; stable tests always pass
+        const passed = !isFlaky || count % 2 === 0;
 
         return {
           test: t,
@@ -250,18 +256,24 @@ describe('FlakeDetector', () => {
       const test: TestDefinition = {
         name: 'parallel-test',
         assertions: [],
-        timeout: 100,
+        timeout: 200,
         retry: 0,
       };
 
-      const executor = async (t: TestDefinition): Promise<TestResult> => ({
-        test: t,
-        status: Math.random() > 0.5 ? 'pass' : 'fail',
-        duration: 50,
-        startTime: Date.now(),
-        endTime: Date.now() + 50,
-        assertions: [],
-      });
+      let callCount = 0;
+      // Executor with a real delay so parallel vs sequential timing differs
+      const executor = async (t: TestDefinition): Promise<TestResult> => {
+        callCount++;
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        return {
+          test: t,
+          status: callCount % 2 === 0 ? 'pass' : 'fail',
+          duration: 20,
+          startTime: Date.now(),
+          endTime: Date.now() + 20,
+          assertions: [],
+        };
+      };
 
       const startParallel = Date.now();
       await detector.detectFlake(test, executor, {
@@ -279,7 +291,7 @@ describe('FlakeDetector', () => {
       });
       const sequentialDuration = Date.now() - startSequential;
 
-      // Parallel should be faster
+      // Parallel should be faster (all 10 run concurrently vs one-at-a-time)
       expect(parallelDuration).toBeLessThan(sequentialDuration);
     });
   });

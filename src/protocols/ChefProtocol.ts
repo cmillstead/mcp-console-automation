@@ -98,32 +98,19 @@ export class ChefProtocol extends BaseProtocol {
     super('chef');
 
     this.capabilities = {
+      ...BaseProtocol.getDefaultCapabilities(),
       supportsStreaming: true,
-      supportsFileTransfer: false,
-      supportsX11Forwarding: false,
-      supportsPortForwarding: false,
       supportsAuthentication: true,
       supportsEncryption: true,
-      supportsCompression: false,
-      supportsMultiplexing: false,
       supportsKeepAlive: true,
       supportsReconnection: true,
-      supportsBinaryData: false,
       supportsCustomEnvironment: true,
       supportsWorkingDirectory: true,
       supportsSignals: true,
-      supportsResizing: false,
       supportsPTY: true,
       maxConcurrentSessions: 20,
       defaultTimeout: 180000, // Chef runs can take longer
-      supportedEncodings: ['utf-8'],
       supportedAuthMethods: ['key', 'certificate'],
-      platformSupport: {
-        windows: true,
-        linux: true,
-        macos: true,
-        freebsd: true,
-      },
     };
   }
 

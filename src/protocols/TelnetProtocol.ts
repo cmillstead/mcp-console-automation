@@ -22,32 +22,14 @@ export class TelnetProtocol extends BaseProtocol {
     super('TelnetProtocol');
 
     this.capabilities = {
+      ...BaseProtocol.getDefaultCapabilities(),
       supportsStreaming: true,
-      supportsFileTransfer: false,
-      supportsX11Forwarding: false,
-      supportsPortForwarding: false,
       supportsAuthentication: true,
-      supportsEncryption: false,
-      supportsCompression: false,
-      supportsMultiplexing: false,
       supportsKeepAlive: true,
       supportsReconnection: true,
-      supportsBinaryData: false,
-      supportsCustomEnvironment: false,
-      supportsWorkingDirectory: false,
-      supportsSignals: false,
-      supportsResizing: false,
-      supportsPTY: false,
       maxConcurrentSessions: 5,
-      defaultTimeout: 30000,
       supportedEncodings: ['utf-8', 'ascii'],
       supportedAuthMethods: ['password'],
-      platformSupport: {
-        windows: true,
-        linux: true,
-        macos: true,
-        freebsd: true,
-      },
     };
   }
 

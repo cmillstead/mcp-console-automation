@@ -16,6 +16,7 @@ export interface SnapshotOptions {
 
 export class SnapshotManager {
   private snapshotsDir: string;
+  private filenameCounter: number = 0;
 
   constructor(snapshotsDir?: string) {
     this.snapshotsDir =
@@ -303,7 +304,8 @@ export class SnapshotManager {
       /[^a-zA-Z0-9_-]/g,
       '_'
     );
-    return `${sanitizedSessionId}-${snapshot.timestamp}.json`;
+    const counter = this.filenameCounter++;
+    return `${sanitizedSessionId}-${snapshot.timestamp}-${counter}.json`;
   }
 
   /**

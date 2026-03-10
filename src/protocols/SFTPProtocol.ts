@@ -53,27 +53,17 @@ import { ErrorRecovery } from '../core/ErrorRecovery.js';
 export class SFTPProtocol extends BaseProtocol {
   public readonly type: ConsoleType = 'sftp';
   public readonly capabilities: ProtocolCapabilities = {
-    supportsStreaming: false,
+    ...BaseProtocol.getDefaultCapabilities(),
     supportsFileTransfer: true,
-    supportsX11Forwarding: false,
-    supportsPortForwarding: false,
     supportsAuthentication: true,
     supportsEncryption: true,
     supportsCompression: true,
-    supportsMultiplexing: false,
     supportsKeepAlive: true,
     supportsReconnection: true,
     supportsBinaryData: true,
-    supportsCustomEnvironment: false,
-    supportsWorkingDirectory: false,
-    supportsSignals: false,
-    supportsResizing: false,
-    supportsPTY: false,
     maxConcurrentSessions: 5,
-    defaultTimeout: 30000,
     supportedEncodings: ['utf8', 'binary'],
     supportedAuthMethods: ['password', 'publickey', 'agent'],
-    platformSupport: { windows: true, linux: true, macos: true, freebsd: true },
   };
 
   private sshClient: SSHClient | null = null;

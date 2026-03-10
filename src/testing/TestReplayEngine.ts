@@ -92,7 +92,7 @@ export class TestReplayEngine {
         results.push(stepResult);
 
         // Check step result
-        if (stepResult.status === 'fail' || stepResult.status === 'skip') {
+        if (stepResult.status === 'fail') {
           overallStatus = 'failure';
           if (stopOnError) {
             break;

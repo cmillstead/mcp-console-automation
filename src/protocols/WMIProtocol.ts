@@ -99,24 +99,13 @@ export class WMIProtocol extends BaseProtocol {
     this.isWindows = os.platform() === 'win32';
 
     this.capabilities = {
+      ...BaseProtocol.getDefaultCapabilities(),
       supportsStreaming: true,
-      supportsFileTransfer: false,
-      supportsX11Forwarding: false,
-      supportsPortForwarding: false,
       supportsAuthentication: true,
       supportsEncryption: true,
-      supportsCompression: false,
       supportsMultiplexing: true,
       supportsKeepAlive: true,
       supportsReconnection: true,
-      supportsBinaryData: false,
-      supportsCustomEnvironment: false,
-      supportsWorkingDirectory: false,
-      supportsSignals: false,
-      supportsResizing: false,
-      supportsPTY: false,
-      maxConcurrentSessions: 10,
-      defaultTimeout: 30000,
       supportedEncodings: ['utf-8', 'utf-16'],
       supportedAuthMethods: ['ntlm', 'kerberos', 'basic'],
       platformSupport: {

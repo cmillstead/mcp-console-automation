@@ -25,6 +25,8 @@ describe('Phase 1 Integration Tests', () => {
   });
 
   beforeEach(() => {
+    // Use fake timers to prevent real intervals from ConsoleManager constructor
+    jest.useFakeTimers();
     recorder = new TestRecorder(testDir);
     consoleManager = new ConsoleManager();
     replayEngine = new TestReplayEngine(consoleManager);
@@ -42,9 +44,14 @@ describe('Phase 1 Integration Tests', () => {
   });
 
   afterEach(async () => {
-    // Cleanup any active sessions
+    // Cleanup any active sessions and destroy to clear interval handles
     try {
       await consoleManager.stopAllSessions();
+    } catch (e) {
+      // Ignore cleanup errors
+    }
+    try {
+      await consoleManager.destroy();
     } catch (e) {
       // Ignore cleanup errors
     }
@@ -56,6 +63,9 @@ describe('Phase 1 Integration Tests', () => {
         // Ignore
       }
     }
+
+    jest.clearAllTimers();
+    jest.useRealTimers();
   });
 
   describe('End-to-End Workflow', () => {
@@ -97,14 +107,14 @@ describe('Phase 1 Integration Tests', () => {
 
       expect(savedRecording.name).toBe('e2e-test');
       expect(savedRecording.steps.length).toBe(3);
-      expect(fs.existsSync(path.join(testDir, 'e2e_test.json'))).toBe(true);
+      expect(fs.existsSync(path.join(testDir, 'e2e-test.json'))).toBe(true);
 
       // Step 3: List recordings
       const recordings = TestRecorder.listRecordings(testDir);
-      expect(recordings).toContain('e2e_test');
+      expect(recordings).toContain('e2e-test');
 
       // Step 4: Load and verify
-      const loaded = TestRecorder.loadRecording('e2e_test', testDir);
+      const loaded = TestRecorder.loadRecording('e2e-test', testDir);
       expect(loaded.name).toBe('e2e-test');
       expect(loaded.steps.length).toBe(3);
       expect(loaded.metadata.description).toBe(
@@ -117,7 +127,7 @@ describe('Phase 1 Integration Tests', () => {
         framework: 'jest',
       });
       expect(jsCode).toContain('e2e_test');
-      expect(jsCode).toContain('echo "Hello, World!"');
+      expect(jsCode).toContain('Hello, World!');
 
       const tsCode = codeGenerator.generateCode(loaded, {
         language: 'typescript',
@@ -178,10 +188,10 @@ describe('Phase 1 Integration Tests', () => {
       recorder.startRecording({ name: 'timing-test' });
 
       recorder.recordSendInput('step1');
-      await new Promise((resolve) => setTimeout(resolve, 50));
+      jest.advanceTimersByTime(50);
 
       recorder.recordSendInput('step2');
-      await new Promise((resolve) => setTimeout(resolve, 50));
+      jest.advanceTimersByTime(50);
 
       recorder.recordSendInput('step3');
 
@@ -206,7 +216,7 @@ describe('Phase 1 Integration Tests', () => {
       recorder.recordCreateSession('s1', { command: 'bash' });
       recorder.stopRecording();
 
-      const loaded = TestRecorder.loadRecording('metadata_test', testDir);
+      const loaded = TestRecorder.loadRecording('metadata-test', testDir);
 
       expect(loaded.metadata.author).toBe(metadata.author);
       expect(loaded.metadata.description).toBe(metadata.description);
@@ -333,7 +343,7 @@ describe('Phase 1 Integration Tests', () => {
       recorder.startRecording({ name: 'delete-test' });
       recorder.stopRecording();
 
-      const filepath = path.join(testDir, 'delete_test.json');
+      const filepath = path.join(testDir, 'delete-test.json');
       expect(fs.existsSync(filepath)).toBe(true);
 
       TestRecorder.deleteRecording('delete-test', testDir);

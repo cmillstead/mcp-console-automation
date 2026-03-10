@@ -158,10 +158,10 @@ export class AssertionEngine {
 
     // Check for common error patterns
     const errorPatterns = [
-      /error:/i,
-      /exception:/i,
-      /fatal:/i,
-      /failed:/i,
+      /error/i,
+      /exception/i,
+      /fatal/i,
+      /failed/i,
       /cannot/i,
       /unable to/i,
       /permission denied/i,

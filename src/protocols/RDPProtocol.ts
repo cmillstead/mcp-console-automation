@@ -107,9 +107,8 @@ export interface RDPGatewayConfig {
 export class RDPProtocol extends BaseProtocol {
   public readonly type: ConsoleType = 'rdp';
   public readonly capabilities: ProtocolCapabilities = {
-    supportsStreaming: false,
+    ...BaseProtocol.getDefaultCapabilities(),
     supportsFileTransfer: true,
-    supportsX11Forwarding: false,
     supportsPortForwarding: true,
     supportsAuthentication: true,
     supportsEncryption: true,
@@ -118,13 +117,7 @@ export class RDPProtocol extends BaseProtocol {
     supportsKeepAlive: true,
     supportsReconnection: true,
     supportsBinaryData: true,
-    supportsCustomEnvironment: false,
-    supportsWorkingDirectory: false,
-    supportsSignals: false,
     supportsResizing: true,
-    supportsPTY: false,
-    maxConcurrentSessions: 10,
-    defaultTimeout: 30000,
     supportedEncodings: ['utf8'],
     supportedAuthMethods: ['password', 'smartcard', 'nla'],
     platformSupport: { windows: true, linux: true, macos: true, freebsd: false },

@@ -129,13 +129,12 @@ export class KubernetesProtocol extends BaseProtocol {
     this.heartbeatInterval = options.heartbeatInterval || 30000;
 
     this.capabilities = {
+      ...BaseProtocol.getDefaultCapabilities(),
       supportsStreaming: true,
       supportsFileTransfer: true,
-      supportsX11Forwarding: false,
       supportsPortForwarding: true,
       supportsAuthentication: true,
       supportsEncryption: true,
-      supportsCompression: false,
       supportsMultiplexing: true,
       supportsKeepAlive: true,
       supportsReconnection: true,
@@ -146,15 +145,7 @@ export class KubernetesProtocol extends BaseProtocol {
       supportsResizing: true,
       supportsPTY: true,
       maxConcurrentSessions: 50,
-      defaultTimeout: 30000,
-      supportedEncodings: ['utf-8'],
       supportedAuthMethods: ['token', 'cert', 'exec'],
-      platformSupport: {
-        windows: true,
-        linux: true,
-        macos: true,
-        freebsd: true,
-      },
     };
 
     this.kc = new k8s.KubeConfig();

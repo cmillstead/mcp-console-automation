@@ -253,11 +253,11 @@ export class PodmanProtocol extends BaseProtocol {
     super('podman');
 
     this.capabilities = {
+      ...BaseProtocol.getDefaultCapabilities(),
       supportsStreaming: true,
       supportsFileTransfer: true,
       supportsX11Forwarding: true,
       supportsPortForwarding: true,
-      supportsAuthentication: false,
       supportsEncryption: true,
       supportsCompression: true,
       supportsMultiplexing: true,
@@ -271,7 +271,6 @@ export class PodmanProtocol extends BaseProtocol {
       supportsPTY: true,
       maxConcurrentSessions: 100, // Podman can handle many containers
       defaultTimeout: 60000, // Container operations can take time
-      supportedEncodings: ['utf-8'],
       supportedAuthMethods: ['registry'],
       platformSupport: {
         windows: false, // Podman is primarily Linux/Unix

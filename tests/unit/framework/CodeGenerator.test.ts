@@ -26,11 +26,9 @@ describe('CodeGenerator', () => {
 
     // Clean up output directory
     if (fs.existsSync(testOutputDir)) {
-      const files = fs.readdirSync(testOutputDir);
-      files.forEach((file) => {
-        fs.unlinkSync(path.join(testOutputDir, file));
-      });
+      fs.rmSync(testOutputDir, { recursive: true, force: true });
     }
+    fs.mkdirSync(testOutputDir, { recursive: true });
   });
 
   describe('generateCode', () => {
@@ -78,7 +76,7 @@ describe('CodeGenerator', () => {
       expect(code).toContain('afterAll');
       expect(code).toContain('createSession');
       expect(code).toContain('sendInput');
-      expect(code).toContain('echo "hello"');
+      expect(code).toContain('echo \\"hello\\"');
     });
 
     it('should generate TypeScript code', () => {

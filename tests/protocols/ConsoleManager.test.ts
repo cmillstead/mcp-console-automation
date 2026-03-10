@@ -8,7 +8,6 @@ jest.mock('../../src/core/ProtocolFactory.js');
 jest.mock('../../src/core/SessionManager.js');
 jest.mock('../../src/core/ErrorDetector.js');
 jest.mock('../../src/utils/logger.js');
-jest.mock('../../src/monitoring/MonitoringSystem.js');
 jest.mock('../../src/core/StreamManager.js');
 jest.mock('../../src/core/PromptDetector.js');
 jest.mock('../../src/core/ConnectionPool.js');
@@ -21,6 +20,34 @@ jest.mock('../../src/core/MetricsCollector.js');
 jest.mock('../../src/core/OutputPaginationManager.js');
 jest.mock('../../src/monitoring/AzureMonitoring.js');
 jest.mock('../../src/core/OutputFilterEngine.js');
+jest.mock('../../src/core/HealthOrchestrator.js');
+jest.mock('../../src/core/DiagnosticsManager.js', () => ({
+  DiagnosticsManager: {
+    getInstance: jest.fn<any>().mockReturnValue({
+      recordEvent: jest.fn<any>(),
+      destroy: jest.fn<any>(),
+      startMetricsCollection: jest.fn<any>(),
+    }),
+  },
+}));
+jest.mock('../../src/config/ConfigManager.js', () => ({
+  ConfigManager: {
+    getInstance: jest.fn<any>().mockReturnValue({
+      getConfigPath: jest.fn<any>().mockReturnValue('/tmp/test-config'),
+      get: jest.fn<any>(),
+      set: jest.fn<any>(),
+      getConnectionProfile: jest.fn<any>(),
+      getApplicationProfileByType: jest.fn<any>().mockReturnValue(null),
+      destroy: jest.fn<any>(),
+    }),
+  },
+}));
+jest.mock('../../src/protocols/DockerProtocol.js');
+jest.mock('../../src/core/NetworkMetricsManager.js');
+jest.mock('../../src/core/SessionPersistenceManager.js');
+jest.mock('../../src/core/CommandQueueManager.js');
+jest.mock('../../src/core/SessionValidator.js');
+jest.mock('../../src/core/SSHConnectionKeepAlive.js');
 
 // Setup logger mock before any tests run
 const mockLogger = {
@@ -141,6 +168,9 @@ describe('ConsoleManager', () => {
       removeAllListeners: jest.fn<any>(),
     } as any;
 
+    // Use fake timers to prevent real intervals from the constructor
+    jest.useFakeTimers();
+
     // Create instance without singleton pattern since constructor is not private
     consoleManager = new ConsoleManager();
     
@@ -156,6 +186,14 @@ describe('ConsoleManager', () => {
       unregisterSession: jest.fn<any>().mockResolvedValue(undefined),
       shutdown: jest.fn<any>().mockResolvedValue(undefined),
       destroy: jest.fn<any>().mockResolvedValue(undefined)
+    };
+    (consoleManager as any).configManager = {
+      getConfigPath: jest.fn<any>().mockReturnValue('/tmp/test-config'),
+      get: jest.fn<any>(),
+      set: jest.fn<any>(),
+      getConnectionProfile: jest.fn<any>(),
+      getApplicationProfileByType: jest.fn<any>().mockReturnValue(null),
+      destroy: jest.fn<any>(),
     };
     (consoleManager as any).errorDetector = { initialize: jest.fn<any>().mockResolvedValue(undefined) };
     (consoleManager as any).streamManager = { initialize: jest.fn<any>().mockResolvedValue(undefined) };
@@ -173,33 +211,40 @@ describe('ConsoleManager', () => {
       initialize: jest.fn<any>().mockResolvedValue(undefined),
       destroy: jest.fn<any>()
     };
-    (consoleManager as any).healthMonitor = {
-      initialize: jest.fn<any>().mockResolvedValue(undefined),
-      start: jest.fn<any>(),
-      stop: jest.fn<any>(),
-      once: jest.fn<any>(),
-      destroy: jest.fn<any>()
-    };
     (consoleManager as any).diagnosticsManager = {
       recordEvent: jest.fn<any>(),
       destroy: jest.fn<any>()
     };
-    (consoleManager as any).heartbeatMonitor = {
+    // healthMonitor, heartbeatMonitor, sessionRecovery, metricsCollector, sshKeepAlive
+    // are now getters that delegate to healthOrchestrator — mock healthOrchestrator instead
+    (consoleManager as any).healthOrchestrator = {
       initialize: jest.fn<any>().mockResolvedValue(undefined),
-      getSessionHeartbeat: jest.fn<any>().mockReturnValue(null)
-    };
-    (consoleManager as any).sshKeepAlive = {
-      getConnectionHealth: jest.fn<any>().mockReturnValue({})
-    };
-    (consoleManager as any).sessionRecovery = { initialize: jest.fn<any>().mockResolvedValue(undefined) };
-    (consoleManager as any).metricsCollector = {
-      initialize: jest.fn<any>().mockResolvedValue(undefined),
-      getMetrics: jest.fn<any>().mockResolvedValue({}),
-      getCurrentMetrics: jest.fn<any>().mockReturnValue({})
-    };
-    (consoleManager as any).monitoringSystem = {
-      initialize: jest.fn<any>().mockResolvedValue(undefined),
-      destroy: jest.fn<any>().mockResolvedValue(undefined)
+      destroy: jest.fn<any>().mockResolvedValue(undefined),
+      start: jest.fn<any>(),
+      stop: jest.fn<any>(),
+      getHealthMonitor: jest.fn<any>().mockReturnValue({
+        initialize: jest.fn<any>().mockResolvedValue(undefined),
+        start: jest.fn<any>(),
+        stop: jest.fn<any>(),
+        once: jest.fn<any>(),
+        destroy: jest.fn<any>()
+      }),
+      getHeartbeatMonitor: jest.fn<any>().mockReturnValue({
+        initialize: jest.fn<any>().mockResolvedValue(undefined),
+        getSessionHeartbeat: jest.fn<any>().mockReturnValue(null)
+      }),
+      getSessionRecovery: jest.fn<any>().mockReturnValue({
+        initialize: jest.fn<any>().mockResolvedValue(undefined)
+      }),
+      getMetricsCollector: jest.fn<any>().mockReturnValue({
+        initialize: jest.fn<any>().mockResolvedValue(undefined),
+        getMetrics: jest.fn<any>().mockResolvedValue({}),
+        getCurrentMetrics: jest.fn<any>().mockReturnValue({})
+      }),
+      getSSHKeepAlive: jest.fn<any>().mockReturnValue({
+        getConnectionHealth: jest.fn<any>().mockReturnValue({})
+      }),
+      getHealingStats: jest.fn<any>().mockReturnValue({})
     };
     
     // Mock logger and other dependencies
@@ -227,14 +272,13 @@ describe('ConsoleManager', () => {
     }
     jest.clearAllMocks();
     jest.clearAllTimers();
+    jest.useRealTimers();
   });
 
   describe('Initialization', () => {
     it('should initialize successfully', async () => {
       const manager = new ConsoleManager();
-      // Mock internal initialization
-      jest.spyOn(manager as any, 'initializeSelfHealingComponents').mockImplementation(() => {});
-      jest.spyOn(manager as any, 'setupSelfHealingIntegration').mockImplementation(() => {});
+      // Verify the constructor completed without throwing
       await expect(Promise.resolve()).resolves.not.toThrow();
     });
 
@@ -533,7 +577,11 @@ describe('ConsoleManager', () => {
 
   describe('Health Status', () => {
     it('should get health status', async () => {
-      const health = await consoleManager.getHealthStatus();
+      // getHealthStatus uses setTimeout internally when selfHealingEnabled is true,
+      // so we need to advance fake timers to let the promise resolve
+      const healthPromise = consoleManager.getHealthStatus();
+      jest.advanceTimersByTime(200);
+      const health = await healthPromise;
 
       expect(health).toBeDefined();
       expect(health).toHaveProperty('systemHealth');

@@ -82,32 +82,16 @@ export class RustProtocol extends BaseProtocol {
     super('rust');
 
     this.capabilities = {
+      ...BaseProtocol.getDefaultCapabilities(),
       supportsStreaming: true,
-      supportsFileTransfer: false,
-      supportsX11Forwarding: false,
-      supportsPortForwarding: false,
-      supportsAuthentication: false,
-      supportsEncryption: false,
-      supportsCompression: false,
-      supportsMultiplexing: false,
       supportsKeepAlive: true,
       supportsReconnection: true,
-      supportsBinaryData: false,
       supportsCustomEnvironment: true,
       supportsWorkingDirectory: true,
       supportsSignals: true,
-      supportsResizing: false,
       supportsPTY: true,
       maxConcurrentSessions: 30,
       defaultTimeout: 60000, // Rust builds can take longer
-      supportedEncodings: ['utf-8'],
-      supportedAuthMethods: [],
-      platformSupport: {
-        windows: true,
-        linux: true,
-        macos: true,
-        freebsd: true,
-      },
     };
   }
 

@@ -149,13 +149,10 @@ export class JTAGProtocol extends BaseProtocol {
     super('jtag');
 
     this.capabilities = {
+      ...BaseProtocol.getDefaultCapabilities(),
       supportsStreaming: true,
       supportsFileTransfer: true,
-      supportsX11Forwarding: false,
       supportsPortForwarding: true,
-      supportsAuthentication: false,
-      supportsEncryption: false,
-      supportsCompression: false,
       supportsMultiplexing: true,
       supportsKeepAlive: true,
       supportsReconnection: true,
@@ -163,18 +160,9 @@ export class JTAGProtocol extends BaseProtocol {
       supportsCustomEnvironment: true,
       supportsWorkingDirectory: true,
       supportsSignals: true,
-      supportsResizing: false,
-      supportsPTY: false,
       maxConcurrentSessions: 4, // Most JTAG adapters support limited concurrent sessions
       defaultTimeout: 60000, // Hardware operations can take time
       supportedEncodings: ['utf-8', 'binary'],
-      supportedAuthMethods: [],
-      platformSupport: {
-        windows: true,
-        linux: true,
-        macos: true,
-        freebsd: true,
-      },
     };
   }
 

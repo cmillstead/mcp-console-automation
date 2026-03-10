@@ -116,32 +116,17 @@ export class VagrantProtocol extends BaseProtocol {
     super('vagrant');
 
     this.capabilities = {
+      ...BaseProtocol.getDefaultCapabilities(),
       supportsStreaming: true,
-      supportsFileTransfer: false,
-      supportsX11Forwarding: false,
       supportsPortForwarding: true,
       supportsAuthentication: true,
-      supportsEncryption: false,
-      supportsCompression: false,
       supportsMultiplexing: true,
       supportsKeepAlive: true,
-      supportsReconnection: false,
-      supportsBinaryData: false,
       supportsCustomEnvironment: true,
       supportsWorkingDirectory: true,
       supportsSignals: true,
-      supportsResizing: false,
-      supportsPTY: false,
-      maxConcurrentSessions: 10,
       defaultTimeout: 300000, // Vagrant operations can take very long
-      supportedEncodings: ['utf-8'],
       supportedAuthMethods: ['ssh-key', 'password'],
-      platformSupport: {
-        windows: true,
-        linux: true,
-        macos: true,
-        freebsd: true,
-      },
     };
   }
 

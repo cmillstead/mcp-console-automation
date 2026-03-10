@@ -109,10 +109,13 @@ describe('OutputFilterEngine', () => {
   describe('Time-based Filtering', () => {
     test('should filter by absolute timestamp (ISO)', async () => {
       const now = new Date();
-      const output = createTestOutput(
-        ['Old log entry', 'Another old entry', 'Recent entry', 'Latest entry'],
-        now.getTime() - 10000
-      ); // 10 seconds ago
+      // Entries at t-10s, t-7s, t-3s, t-1s (spread across the cutoff)
+      const output = [
+        { sessionId: 'test-session', timestamp: new Date(now.getTime() - 10000), type: 'stdout' as const, data: 'Old log entry' },
+        { sessionId: 'test-session', timestamp: new Date(now.getTime() - 7000), type: 'stdout' as const, data: 'Another old entry' },
+        { sessionId: 'test-session', timestamp: new Date(now.getTime() - 3000), type: 'stdout' as const, data: 'Recent entry' },
+        { sessionId: 'test-session', timestamp: new Date(now.getTime() - 1000), type: 'stdout' as const, data: 'Latest entry' },
+      ];
 
       const filterTime = new Date(now.getTime() - 5000).toISOString(); // 5 seconds ago
 
@@ -121,15 +124,18 @@ describe('OutputFilterEngine', () => {
       });
 
       expect(result.success).toBe(true);
-      expect(result.filteredOutput).toHaveLength(2); // Last 2 entries
+      expect(result.filteredOutput).toHaveLength(2); // Last 2 entries (t-3s and t-1s)
     });
 
     test('should filter by relative timestamp', async () => {
       const now = Date.now();
-      const output = createTestOutput(
-        ['Very old entry', 'Old entry', 'Recent entry', 'Latest entry'],
-        now - 600000
-      ); // 10 minutes ago
+      // Entries at t-10m, t-7m, t-3m, t-1m (spread across the 5m cutoff)
+      const output = [
+        { sessionId: 'test-session', timestamp: new Date(now - 600000), type: 'stdout' as const, data: 'Very old entry' },
+        { sessionId: 'test-session', timestamp: new Date(now - 420000), type: 'stdout' as const, data: 'Old entry' },
+        { sessionId: 'test-session', timestamp: new Date(now - 180000), type: 'stdout' as const, data: 'Recent entry' },
+        { sessionId: 'test-session', timestamp: new Date(now - 60000), type: 'stdout' as const, data: 'Latest entry' },
+      ];
 
       const result = await filterEngine.filter(output, {
         since: '5m', // Last 5 minutes
@@ -244,7 +250,7 @@ describe('OutputFilterEngine', () => {
       });
 
       expect(result.success).toBe(true);
-      expect(result.filteredOutput).toHaveLength(3); // Only ERRORs containing 'Database'
+      expect(result.filteredOutput).toHaveLength(2); // Only ERRORs containing 'Database' (lines 1 and 5)
     });
 
     test('should handle OR logic with multiple patterns', async () => {
@@ -319,7 +325,7 @@ describe('OutputFilterEngine', () => {
 
       expect(result.success).toBe(true);
       expect(result.metrics.totalLines).toBe(150000);
-      expect(result.metrics.filteredLines).toBe(300); // Every 500th line is WARN
+      expect(result.metrics.filteredLines).toBe(150); // Every 500th line is WARN, but every 1000th is ERROR instead
       // Note: streamingUsed property not available in current metrics interface
     });
 
@@ -333,7 +339,7 @@ describe('OutputFilterEngine', () => {
 
       expect(result.success).toBe(true);
       expect(result.metrics.totalLines).toBe(50000); // Should only process 50k
-      expect(result.metrics.filteredLines).toBe(500); // Every 100th line in first 50k
+      expect(result.metrics.filteredLines).toBe(400); // Every 100th line in first 50k, minus those that are ERROR/WARN
     });
 
     test('should maintain performance with complex regex patterns', async () => {

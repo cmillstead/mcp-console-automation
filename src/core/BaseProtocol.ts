@@ -42,6 +42,32 @@ export abstract class BaseProtocol extends EventEmitter implements IProtocol {
     this.logger = new Logger(name);
   }
 
+  static getDefaultCapabilities(): ProtocolCapabilities {
+    return {
+      supportsStreaming: false,
+      supportsFileTransfer: false,
+      supportsX11Forwarding: false,
+      supportsPortForwarding: false,
+      supportsAuthentication: false,
+      supportsEncryption: false,
+      supportsCompression: false,
+      supportsMultiplexing: false,
+      supportsKeepAlive: false,
+      supportsReconnection: false,
+      supportsBinaryData: false,
+      supportsCustomEnvironment: false,
+      supportsWorkingDirectory: false,
+      supportsSignals: false,
+      supportsResizing: false,
+      supportsPTY: false,
+      maxConcurrentSessions: 10,
+      defaultTimeout: 30000,
+      supportedEncodings: ['utf-8'],
+      supportedAuthMethods: [],
+      platformSupport: { windows: true, linux: true, macos: true, freebsd: true },
+    };
+  }
+
   // Abstract methods that must be implemented by concrete protocols
   abstract initialize(): Promise<void>;
   abstract dispose(): Promise<void>;

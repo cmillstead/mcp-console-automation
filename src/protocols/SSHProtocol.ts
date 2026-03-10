@@ -29,6 +29,7 @@ export class SSHProtocol extends BaseProtocol {
     super('SSHProtocol');
 
     this.capabilities = {
+      ...BaseProtocol.getDefaultCapabilities(),
       supportsStreaming: true,
       supportsFileTransfer: true,
       supportsX11Forwarding: true,
@@ -46,15 +47,8 @@ export class SSHProtocol extends BaseProtocol {
       supportsResizing: true,
       supportsPTY: true,
       maxConcurrentSessions: 20,
-      defaultTimeout: 30000,
       supportedEncodings: ['utf-8', 'ascii', 'binary'],
       supportedAuthMethods: ['password', 'publickey', 'keyboard-interactive'],
-      platformSupport: {
-        windows: true,
-        linux: true,
-        macos: true,
-        freebsd: true,
-      },
     };
   }
 
@@ -86,11 +80,7 @@ export class SSHProtocol extends BaseProtocol {
   ): Promise<ConsoleSession> {
     // CRITICAL DEBUG: Track execution flow
     const debugLog = (msg: string) => {
-      try {
-        console.error(`[SSH-DEBUG] ${msg}`);
-      } catch (e) {
-        // Ignore debug errors
-      }
+      console.error(`[SSH-DEBUG] ${msg}`);
     };
 
     debugLog('=== SSHProtocol.doCreateSession CALLED ===');
@@ -171,12 +161,8 @@ export class SSHProtocol extends BaseProtocol {
       );
       return session;
     } catch (error) {
-      try {
-        console.error(`[SSH-DEBUG] ERROR in doCreateSession: ${error}`);
-        console.error(`[SSH-DEBUG] Error stack: ${(error as Error).stack}`);
-      } catch (e) {
-        // Ignore debug errors
-      }
+      console.error(`[SSH-DEBUG] ERROR in doCreateSession: ${error}`);
+      console.error(`[SSH-DEBUG] Error stack: ${(error as Error).stack}`);
       this.logger.error(`Failed to create SSH session: ${error}`);
 
       // Cleanup on failure

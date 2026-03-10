@@ -256,10 +256,9 @@ export class PuppetProtocol extends BaseProtocol {
     super('puppet');
 
     this.capabilities = {
+      ...BaseProtocol.getDefaultCapabilities(),
       supportsStreaming: true,
       supportsFileTransfer: true,
-      supportsX11Forwarding: false,
-      supportsPortForwarding: false,
       supportsAuthentication: true,
       supportsEncryption: true,
       supportsCompression: true,
@@ -270,18 +269,10 @@ export class PuppetProtocol extends BaseProtocol {
       supportsCustomEnvironment: true,
       supportsWorkingDirectory: true,
       supportsSignals: true,
-      supportsResizing: false,
-      supportsPTY: false,
       maxConcurrentSessions: 50, // Puppet can handle many concurrent operations
       defaultTimeout: 600000, // Puppet operations can take a very long time
       supportedEncodings: ['utf-8', 'ascii'],
       supportedAuthMethods: ['cert', 'psk'],
-      platformSupport: {
-        windows: true, // Puppet supports Windows
-        linux: true, // Primary Puppet platform
-        macos: true, // Puppet supports macOS
-        freebsd: true,
-      },
     };
   }
 

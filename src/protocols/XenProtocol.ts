@@ -132,9 +132,9 @@ interface XenSession extends ConsoleSession {
 export class XenProtocol extends BaseProtocol {
   public readonly type: ConsoleType = 'xen';
   public readonly capabilities: ProtocolCapabilities = {
+    ...BaseProtocol.getDefaultCapabilities(),
     supportsStreaming: true,
     supportsFileTransfer: true,
-    supportsX11Forwarding: false,
     supportsPortForwarding: true,
     supportsAuthentication: true,
     supportsEncryption: true,
@@ -142,15 +142,11 @@ export class XenProtocol extends BaseProtocol {
     supportsMultiplexing: true,
     supportsKeepAlive: true,
     supportsReconnection: true,
-    supportsBinaryData: false,
     supportsCustomEnvironment: true,
     supportsWorkingDirectory: true,
     supportsSignals: true,
-    supportsResizing: false,
     supportsPTY: true,
     maxConcurrentSessions: 20,
-    defaultTimeout: 30000,
-    supportedEncodings: ['utf-8'],
     supportedAuthMethods: ['password', 'session', 'key'],
     platformSupport: {
       windows: false,

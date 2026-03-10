@@ -167,32 +167,18 @@ export class AnsibleProtocol extends BaseProtocol {
 
     // Initialize capabilities
     this.capabilities = {
+      ...BaseProtocol.getDefaultCapabilities(),
       supportsStreaming: true,
-      supportsFileTransfer: false,
-      supportsX11Forwarding: false,
-      supportsPortForwarding: false,
       supportsAuthentication: true,
       supportsEncryption: true,
-      supportsCompression: false,
       supportsMultiplexing: true,
       supportsKeepAlive: true,
-      supportsReconnection: false,
-      supportsBinaryData: false,
       supportsCustomEnvironment: true,
       supportsWorkingDirectory: true,
       supportsSignals: true,
-      supportsResizing: false,
-      supportsPTY: false,
       maxConcurrentSessions: 50,
       defaultTimeout: 300000,
-      supportedEncodings: ['utf-8'],
       supportedAuthMethods: ['ssh-key', 'password'],
-      platformSupport: {
-        windows: true,
-        linux: true,
-        macos: true,
-        freebsd: true,
-      },
     };
 
     this.initializeCallbacks();

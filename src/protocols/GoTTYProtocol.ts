@@ -92,9 +92,8 @@ export class GoTTYProtocol extends BaseProtocol {
     super('gotty');
 
     this.capabilities = {
+      ...BaseProtocol.getDefaultCapabilities(),
       supportsStreaming: true,
-      supportsFileTransfer: false,
-      supportsX11Forwarding: false,
       supportsPortForwarding: true,
       supportsAuthentication: true,
       supportsEncryption: true,
@@ -102,7 +101,6 @@ export class GoTTYProtocol extends BaseProtocol {
       supportsMultiplexing: true,
       supportsKeepAlive: true,
       supportsReconnection: true,
-      supportsBinaryData: false,
       supportsCustomEnvironment: true,
       supportsWorkingDirectory: true,
       supportsSignals: true,
@@ -110,14 +108,7 @@ export class GoTTYProtocol extends BaseProtocol {
       supportsPTY: true,
       maxConcurrentSessions: 100, // GoTTY can handle many concurrent web clients
       defaultTimeout: 300000, // Web sessions can be longer
-      supportedEncodings: ['utf-8'],
       supportedAuthMethods: ['basic', 'credential'],
-      platformSupport: {
-        windows: true,
-        linux: true,
-        macos: true,
-        freebsd: true,
-      },
     };
   }
 

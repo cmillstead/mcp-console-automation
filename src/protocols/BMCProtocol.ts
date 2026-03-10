@@ -80,32 +80,19 @@ export class BMCProtocol extends BaseProtocol {
     super('bmc');
 
     this.capabilities = {
+      ...BaseProtocol.getDefaultCapabilities(),
       supportsStreaming: true,
-      supportsFileTransfer: false,
-      supportsX11Forwarding: false,
-      supportsPortForwarding: false,
       supportsAuthentication: true,
       supportsEncryption: true,
-      supportsCompression: false,
-      supportsMultiplexing: false,
       supportsKeepAlive: true,
       supportsReconnection: true,
       supportsBinaryData: true,
       supportsCustomEnvironment: true,
       supportsWorkingDirectory: true,
       supportsSignals: true,
-      supportsResizing: false,
       supportsPTY: true,
       maxConcurrentSessions: 5,
-      defaultTimeout: 30000, // BMC operations can be slow
-      supportedEncodings: ['utf-8'],
       supportedAuthMethods: ['password', 'certificate'],
-      platformSupport: {
-        windows: true,
-        linux: true,
-        macos: true,
-        freebsd: true,
-      },
     };
   }
 

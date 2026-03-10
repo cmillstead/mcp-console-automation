@@ -82,13 +82,9 @@ export class DBusProtocol extends BaseProtocol {
     super('dbus');
 
     this.capabilities = {
+      ...BaseProtocol.getDefaultCapabilities(),
       supportsStreaming: true,
-      supportsFileTransfer: false,
-      supportsX11Forwarding: false,
-      supportsPortForwarding: false,
       supportsAuthentication: true,
-      supportsEncryption: false,
-      supportsCompression: false,
       supportsMultiplexing: true,
       supportsKeepAlive: true,
       supportsReconnection: true,
@@ -96,11 +92,6 @@ export class DBusProtocol extends BaseProtocol {
       supportsCustomEnvironment: true,
       supportsWorkingDirectory: true,
       supportsSignals: true,
-      supportsResizing: false,
-      supportsPTY: false,
-      maxConcurrentSessions: 10,
-      defaultTimeout: 30000, // D-Bus operations are usually fast
-      supportedEncodings: ['utf-8'],
       supportedAuthMethods: ['external', 'cookie'],
       platformSupport: {
         windows: false, // D-Bus is primarily Linux/Unix

@@ -3463,22 +3463,19 @@ export class ConsoleAutomationServer {
     process.on('SIGINT', async () => {
       this.logger.info('Received SIGINT, shutting down...');
       debugLog('[SIGNAL] SIGINT received');
-      await this.gracefulShutdown();
-      process.exit(0);
+      await this.gracefulShutdown(0);
     });
 
     process.on('SIGTERM', async () => {
       this.logger.info('Received SIGTERM, shutting down...');
       debugLog('[SIGNAL] SIGTERM received');
-      await this.gracefulShutdown();
-      process.exit(0);
+      await this.gracefulShutdown(0);
     });
 
     process.on('uncaughtException', async (error) => {
       this.logger.error('Uncaught exception:', error);
       debugLog('[UNCAUGHT EXCEPTION]', error);
-      await this.gracefulShutdown();
-      process.exit(1);
+      await this.gracefulShutdown(1);
     });
 
     process.on('unhandledRejection', (reason) => {
@@ -3527,8 +3524,13 @@ export class ConsoleAutomationServer {
         debugLog('[DEBUG] *** CRITICAL ERROR - Server will shutdown ***');
         this.logger.error('Critical error detected:', error);
         // Don't use async here - it can cause issues with error handling
-        this.gracefulShutdown().catch(() => {});
-        setTimeout(() => process.exit(1), 2000);
+        // gracefulShutdown will call process.exit(1) after cleanup
+        this.gracefulShutdown(1).catch(() => {
+          // Fallback if shutdown itself fails
+          if (process.env.NODE_ENV !== 'test') {
+            process.exit(1);
+          }
+        });
       } else {
         // Recover from non-critical errors
         debugLog('[DEBUG] *** RECOVERABLE ERROR - Server will continue ***');
@@ -3694,7 +3696,7 @@ export class ConsoleAutomationServer {
     await this.server.connect(this.transport);
   }
 
-  private async gracefulShutdown() {
+  private async gracefulShutdown(exitCode: number = 0) {
     if (this.isShuttingDown) {
       return;
     }
@@ -3727,9 +3729,12 @@ export class ConsoleAutomationServer {
     } catch (error: unknown) {
       debugLog('[SHUTDOWN ERROR]', error);
       this.logger.error('Error during shutdown:', error);
+      if (exitCode === 0) exitCode = 1;
     }
 
-    process.exit(0);
+    if (process.env.NODE_ENV !== 'test') {
+      process.exit(exitCode);
+    }
   }
 
   private classifyError(error: unknown): ErrorClassification {
@@ -3983,8 +3988,12 @@ if (isMainModule || isFromIndex) {
   server.start().catch((error) => {
     debugLog('[DEBUG] Server start failed:', error);
     // CRITICAL: Never use console.error in MCP mode
-    // Silent exit to avoid stdio corruption
-    setTimeout(() => process.exit(1), 2000);
+    // Server failed to start - exit after allowing logs to flush
+    setTimeout(() => {
+      if (process.env.NODE_ENV !== 'test') {
+        process.exit(1);
+      }
+    }, 100);
   });
 } else {
   debugLog('[DEBUG] Not starting - imported as module');

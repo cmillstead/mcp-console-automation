@@ -106,13 +106,11 @@ export class HyperVProtocol extends BaseProtocol {
     super('hyperv');
 
     this.capabilities = {
+      ...BaseProtocol.getDefaultCapabilities(),
       supportsStreaming: true,
-      supportsFileTransfer: false,
-      supportsX11Forwarding: false,
       supportsPortForwarding: true,
       supportsAuthentication: true,
       supportsEncryption: true,
-      supportsCompression: false,
       supportsMultiplexing: true,
       supportsKeepAlive: true,
       supportsReconnection: true,
@@ -121,10 +119,8 @@ export class HyperVProtocol extends BaseProtocol {
       supportsWorkingDirectory: true,
       supportsSignals: true,
       supportsResizing: true,
-      supportsPTY: false, // Hyper-V uses console redirection
       maxConcurrentSessions: 50, // Hyper-V can handle many VMs
       defaultTimeout: 120000, // VM operations can take time
-      supportedEncodings: ['utf-8'],
       supportedAuthMethods: ['password', 'certificate', 'domain'],
       platformSupport: {
         windows: true, // Hyper-V is Windows-only

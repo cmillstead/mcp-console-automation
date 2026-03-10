@@ -169,6 +169,9 @@ export class ConsoleManager
   // Azure monitoring support (kept separate as it's not a protocol)
   private azureMonitoring: AzureMonitoring;
 
+  // Protocol cache for factory-created instances
+  private protocolCache: Map<string, IProtocol> = new Map();
+
   // Legacy protocol instances (to be fully migrated)
   private winrmProtocols: Map<string, any>;
   private vncProtocols: Map<string, any>;
@@ -471,6 +474,19 @@ export class ConsoleManager
     this.azureMonitoring = new AzureMonitoring(this.logger.getWinstonLogger());
 
     // Setup protocol integrations will be handled on-demand
+  }
+
+  /**
+   * Get or create a protocol instance through the factory, with caching.
+   * Use this instead of direct protocol instantiation for new code.
+   */
+  private async getOrCreateProtocol(type: ConsoleType): Promise<IProtocol> {
+    let protocol = this.protocolCache.get(type);
+    if (!protocol) {
+      protocol = await this.protocolFactory.createProtocol(type);
+      this.protocolCache.set(type, protocol);
+    }
+    return protocol;
   }
 
   /**
@@ -916,110 +932,6 @@ export class ConsoleManager
       );
       this.emit('require-reauth', data);
     });
-  }
-
-  /**
-   * Setup Docker protocol event handlers
-   */
-  private setupDockerProtocolHandlers(): void {
-    // Docker protocol handlers are now managed by the protocol instance itself
-    // via the ProtocolFactory. This method is kept for backwards compatibility
-    // but will be removed in the future.
-    return;
-
-    /* Legacy code - to be removed
-    this.dockerProtocol.on('container-created', (containerId, session) => {
-      this.logger.info(`Docker container created: ${containerId} for session ${session.id}`);
-      this.emit('docker-container-created', { containerId, sessionId: session.id });
-    });
-
-    this.dockerProtocol.on('container-started', (containerId, session) => {
-      this.logger.info(`Docker container started: ${containerId} for session ${session.id}`);
-      this.emit('docker-container-started', { containerId, sessionId: session.id });
-    });
-
-    this.dockerProtocol.on('container-stopped', (containerId, session) => {
-      this.logger.info(`Docker container stopped: ${containerId} for session ${session.id}`);
-      this.emit('docker-container-stopped', { containerId, sessionId: session.id });
-    });
-
-    this.dockerProtocol.on('container-error', (containerId, error, session) => {
-      this.logger.error(`Docker container error: ${containerId} for session ${session.id}:`, error);
-      this.emit('docker-container-error', { containerId, sessionId: session.id, error });
-    });
-
-    this.dockerProtocol.on('exec-created', (execId, session) => {
-      this.logger.info(`Docker exec created: ${execId} for session ${session.id}`);
-      this.emit('docker-exec-created', { execId, sessionId: session.id });
-    });
-
-    this.dockerProtocol.on('exec-started', (execId, session) => {
-      this.logger.info(`Docker exec started: ${execId} for session ${session.id}`);
-      this.emit('docker-exec-started', { execId, sessionId: session.id });
-    });
-
-    this.dockerProtocol.on('exec-completed', (execId, exitCode, session) => {
-      this.logger.info(`Docker exec completed: ${execId} with exit code ${exitCode} for session ${session.id}`);
-      this.emit('docker-exec-completed', { execId, exitCode, sessionId: session.id });
-    });
-
-    this.dockerProtocol.on('health-check', (result, session) => {
-      this.logger.debug(`Docker health check: ${result.status} for container ${result.containerId} in session ${session.id}`);
-      this.emit('docker-health-check', { healthCheck: result, sessionId: session.id });
-      
-      // Integrate with console manager's health monitoring
-      if (result.status === 'unhealthy' && result.consecutiveFailures >= 3) {
-        this.handleSessionError(session.id, new Error(`Container health check failed: ${result.output}`), 'docker-health-check');
-      }
-    });
-
-    this.dockerProtocol.on('log-stream', (logEntry, session) => {
-      // Forward docker logs as console output
-      const consoleOutput: ConsoleOutput = {
-        sessionId: session.id,
-        type: logEntry.stream as 'stdout' | 'stderr',
-        data: logEntry.message,
-        timestamp: logEntry.timestamp,
-        raw: logEntry.raw?.toString()
-      };
-      
-      // Add to buffer
-      const buffer = this.outputBuffers.get(session.id) || [];
-      buffer.push(consoleOutput);
-      // Also add to pagination manager for large output handling
-      this.paginationManager.addOutputs(session.id, [consoleOutput]);
-      
-      // Keep buffer size under control
-      if (buffer.length > this.maxBufferSize) {
-        buffer.splice(0, buffer.length - this.maxBufferSize);
-      }
-      
-      this.outputBuffers.set(session.id, buffer);
-      this.emit('output', consoleOutput);
-    });
-
-    this.dockerProtocol.on('metrics-collected', (metrics, session) => {
-      this.logger.debug(`Docker metrics collected for container ${metrics.containerId} in session ${session.id}`);
-      this.emit('docker-metrics', { metrics, sessionId: session.id });
-    });
-
-    this.dockerProtocol.on('connection-error', (error) => {
-      this.logger.error('Docker connection error:', error);
-      this.emit('docker-connection-error', { error });
-    });
-
-    this.dockerProtocol.on('reconnected', (connection) => {
-      this.logger.info('Docker connection reconnected successfully');
-      this.emit('docker-reconnected');
-    });
-
-    this.dockerProtocol.on('docker-event', (event) => {
-      this.logger.debug(`Docker daemon event: ${event.type}:${event.action} for ${event.actor.id}`);
-      this.emit('docker-event', event);
-    });
-
-    this.logger.info('Docker protocol event handlers initialized');
-    */
   }
 
   /**
@@ -7868,6 +7780,50 @@ export class ConsoleManager
       this.logger.info('Serial protocol cleaned up');
     }
 
+    // Clean up all cached protocols
+    for (const [type, protocol] of this.protocolCache) {
+      try {
+        await protocol.cleanup();
+      } catch (e) {
+        this.logger.warn(`Error cleaning up ${type} protocol:`, e instanceof Error ? e.message : String(e));
+      }
+    }
+    this.protocolCache.clear();
+
+    // Clean up legacy protocol instances
+    const legacyProtocols: Array<{ name: string; instance: any }> = [
+      { name: 'docker', instance: this.dockerProtocol },
+      { name: 'kubernetes', instance: this.kubernetesProtocol },
+      { name: 'aws-ssm', instance: this.awsSSMProtocol },
+      { name: 'azure', instance: this.azureProtocol },
+      { name: 'rdp', instance: this.rdpProtocol },
+      { name: 'wsl', instance: this.wslProtocol },
+      { name: 'ansible', instance: this.ansibleProtocol },
+      { name: 'websocket-terminal', instance: this.webSocketTerminalProtocol },
+    ];
+    for (const { name, instance } of legacyProtocols) {
+      if (instance && typeof instance.cleanup === 'function') {
+        try {
+          await instance.cleanup();
+        } catch (e) {
+          this.logger.warn(`Error cleaning up ${name} protocol:`, e instanceof Error ? e.message : String(e));
+        }
+      }
+    }
+
+    // Clear session maps
+    this.sftpProtocols?.clear();
+    this.winrmProtocols?.clear();
+    this.vncProtocols?.clear();
+    this.ipcProtocols?.clear();
+    this.ipmiProtocols?.clear();
+    this.rdpSessions?.clear();
+    this.winrmSessions?.clear();
+    this.vncSessions?.clear();
+    this.ipcSessions?.clear();
+    this.ipmiSessions?.clear();
+    this.webSocketTerminalSessions?.clear();
+
     // Shutdown self-healing components
     if (this.selfHealingEnabled) {
       await this.healthOrchestrator.stop();
@@ -9828,7 +9784,9 @@ export class ConsoleManager
    */
   private async setupWSLIntegration(): Promise<void> {
     try {
-      // Initialize WSL protocol
+      // Initialize WSL protocol via factory
+      const protocol = await this.getOrCreateProtocol('wsl');
+      this.wslProtocol = protocol;
       await this.wslProtocol.initialize();
       this.logger.info('WSL integration setup completed');
     } catch (error) {
@@ -9841,7 +9799,9 @@ export class ConsoleManager
    */
   private async setupAnsibleIntegration(): Promise<void> {
     try {
-      // Initialize Ansible protocol
+      // Initialize Ansible protocol via factory
+      const protocol = await this.getOrCreateProtocol('ansible');
+      this.ansibleProtocol = protocol;
       await this.ansibleProtocol.initialize();
       this.logger.info('Ansible integration setup completed');
     } catch (error) {

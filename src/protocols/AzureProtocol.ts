@@ -166,32 +166,17 @@ export class AzureProtocol extends BaseProtocol {
     super('azure');
 
     this.capabilities = {
+      ...BaseProtocol.getDefaultCapabilities(),
       supportsStreaming: true,
-      supportsFileTransfer: false,
-      supportsX11Forwarding: false,
       supportsPortForwarding: true,
       supportsAuthentication: true,
       supportsEncryption: true,
-      supportsCompression: false,
-      supportsMultiplexing: false,
       supportsKeepAlive: true,
       supportsReconnection: true,
-      supportsBinaryData: false,
-      supportsCustomEnvironment: false,
-      supportsWorkingDirectory: false,
-      supportsSignals: false,
       supportsResizing: true,
       supportsPTY: true,
       maxConcurrentSessions: 50,
-      defaultTimeout: 30000,
-      supportedEncodings: ['utf-8'],
       supportedAuthMethods: ['oauth', 'service-principal', 'managed-identity'],
-      platformSupport: {
-        windows: true,
-        linux: true,
-        macos: true,
-        freebsd: true,
-      },
     };
   }
 

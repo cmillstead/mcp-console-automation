@@ -121,6 +121,7 @@ interface X11VNCSession extends ConsoleSession {
 export class X11VNCProtocol extends BaseProtocol {
   public readonly type: ConsoleType = 'x11vnc';
   public readonly capabilities: ProtocolCapabilities = {
+    ...BaseProtocol.getDefaultCapabilities(),
     supportsStreaming: true,
     supportsFileTransfer: true,
     supportsX11Forwarding: true,
@@ -136,9 +137,6 @@ export class X11VNCProtocol extends BaseProtocol {
     supportsWorkingDirectory: true,
     supportsSignals: true,
     supportsResizing: true,
-    supportsPTY: false,
-    maxConcurrentSessions: 10,
-    defaultTimeout: 30000,
     supportedEncodings: [
       'utf-8',
       'raw',
