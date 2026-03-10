@@ -215,6 +215,13 @@ export class ProtocolFactory extends EventEmitter {
   }
 
   /**
+   * Reset the singleton instance. Intended for testing only.
+   */
+  public static resetInstance(): void {
+    ProtocolFactory.instance = undefined as unknown as ProtocolFactory;
+  }
+
+  /**
    * Setup default configurations for all protocol types
    */
   private setupDefaultConfigs(): void {
