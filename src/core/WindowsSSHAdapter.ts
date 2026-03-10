@@ -127,6 +127,7 @@ while (!$process.HasExited) {
           plinkFound = true;
           break;
         } catch (e) {
+          this.logger.debug(`Plink not found at path, trying next:`, e instanceof Error ? e.message : String(e));
           continue;
         }
       }

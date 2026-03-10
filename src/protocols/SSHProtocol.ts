@@ -86,11 +86,7 @@ export class SSHProtocol extends BaseProtocol {
   ): Promise<ConsoleSession> {
     // CRITICAL DEBUG: Track execution flow
     const debugLog = (msg: string) => {
-      try {
-        console.error(`[SSH-DEBUG] ${msg}`);
-      } catch (e) {
-        // Ignore debug errors
-      }
+      console.error(`[SSH-DEBUG] ${msg}`);
     };
 
     debugLog('=== SSHProtocol.doCreateSession CALLED ===');
