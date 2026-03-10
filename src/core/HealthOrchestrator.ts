@@ -100,7 +100,7 @@ export interface HealthOrchestratorConfig {
     enableHistoricalMetrics: boolean;
     persistenceEnabled: boolean;
     persistencePath: string;
-    exportFormats: string[];
+    exportFormats: ('json' | 'csv' | 'prometheus')[];
     alertThresholds: {
       errorRate: number;
       responseTime: number;
@@ -144,6 +144,14 @@ export class HealthOrchestrator extends EventEmitter {
   private logger: Logger;
   private config: HealthOrchestratorConfig;
 
+  private healingStats = {
+    totalHealingAttempts: 0,
+    successfulHealingAttempts: 0,
+    automaticRecoveries: 0,
+    preventedFailures: 0,
+    proactiveReconnections: 0,
+  };
+
   constructor(
     logger: Logger,
     host: HealthOrchestratorHost,
@@ -157,6 +165,59 @@ export class HealthOrchestrator extends EventEmitter {
     this.config = config;
     this.networkMetricsManager = networkMetricsManager;
     this.sessionPersistenceManager = sessionPersistenceManager;
+
+    this.initializeComponents();
+  }
+
+  /**
+   * Create all 5 self-healing components using orchestrator config.
+   * Moved from ConsoleManager.initializeSelfHealingComponents().
+   */
+  private initializeComponents(): void {
+    // Initialize HealthMonitor with comprehensive system monitoring
+    this.healthMonitor = new HealthMonitor({
+      checkInterval: this.config.healthMonitor.checkInterval,
+      thresholds: this.config.healthMonitor.thresholds,
+    });
+
+    // Initialize HeartbeatMonitor for session health tracking with SSH proactive reconnection
+    this.heartbeatMonitor = new HeartbeatMonitor({
+      ...this.config.heartbeatMonitor,
+      enablePredictiveFailure: this.config.predictiveHealingEnabled,
+    });
+
+    // Initialize SessionRecovery with multiple strategies
+    this.sessionRecovery = new SessionRecovery(this.config.sessionRecovery);
+
+    // Initialize MetricsCollector for comprehensive monitoring
+    this.metricsCollector = new MetricsCollector({
+      ...this.config.metricsCollector,
+      enablePredictiveMetrics: this.config.predictiveHealingEnabled,
+    });
+
+    // Initialize SSH KeepAlive for connection maintenance
+    this.sshKeepAlive = new SSHConnectionKeepAlive({
+      ...this.config.sshKeepAlive,
+      enablePredictiveReconnect: this.config.predictiveHealingEnabled,
+    });
+
+    // Start proactive health monitoring based on environment
+    if (
+      process.env.NODE_ENV === 'production' ||
+      process.env.ENABLE_PROACTIVE_MONITORING === 'true'
+    ) {
+      this.sshKeepAlive.startProactiveMonitoring(3); // Every 3 minutes in production
+      this.logger.info(
+        'Proactive health monitoring enabled (3-minute intervals)'
+      );
+    } else {
+      this.sshKeepAlive.startProactiveMonitoring(10); // Every 10 minutes in development
+      this.logger.info(
+        'Proactive health monitoring enabled (10-minute intervals)'
+      );
+    }
+
+    this.logger.info('Self-healing components initialized successfully');
   }
 
   getNetworkMetricsManager(): NetworkMetricsManager {
@@ -167,7 +228,31 @@ export class HealthOrchestrator extends EventEmitter {
     return this.sessionPersistenceManager;
   }
 
-  // Placeholders — filled in Tasks 2-3
+  getHealingStats(): typeof this.healingStats {
+    return { ...this.healingStats };
+  }
+
+  getHealthMonitor(): HealthMonitor {
+    return this.healthMonitor;
+  }
+
+  getHeartbeatMonitor(): HeartbeatMonitor {
+    return this.heartbeatMonitor;
+  }
+
+  getSessionRecovery(): SessionRecovery {
+    return this.sessionRecovery;
+  }
+
+  getMetricsCollector(): MetricsCollector {
+    return this.metricsCollector;
+  }
+
+  getSSHKeepAlive(): SSHConnectionKeepAlive {
+    return this.sshKeepAlive;
+  }
+
+  // Placeholders — filled in Task 3
   start(): void {}
   async stop(): Promise<void> {}
   onSessionCreated(sessionId: string, _sessionData: any): void {
