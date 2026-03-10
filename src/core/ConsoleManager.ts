@@ -54,7 +54,6 @@ import {
   PaginationResponse,
   PaginationOptions,
 } from './OutputPaginationManager.js';
-import { MonitoringSystem } from '../monitoring/MonitoringSystem.js';
 import { PromptDetector, PromptDetectionResult } from './PromptDetector.js';
 import { ConnectionPool } from './ConnectionPool.js';
 import { SessionManager } from './SessionManager.js';
@@ -67,6 +66,11 @@ import { HeartbeatMonitor } from './HeartbeatMonitor.js';
 import { SessionRecovery } from './SessionRecovery.js';
 import { MetricsCollector } from './MetricsCollector.js';
 import { SSHConnectionKeepAlive } from './SSHConnectionKeepAlive.js';
+import {
+  HealthOrchestrator,
+  HealthOrchestratorHost,
+  HealthOrchestratorConfig,
+} from './HealthOrchestrator.js';
 import {
   ProtocolFactory,
   IProtocol,
@@ -96,7 +100,10 @@ import PQueue from 'p-queue';
 import { platform } from 'os';
 import { readFileSync } from 'fs';
 
-export class ConsoleManager extends EventEmitter implements CommandQueueHost {
+export class ConsoleManager
+  extends EventEmitter
+  implements CommandQueueHost
+{
   private sessions: Map<string, ConsoleSession>;
   private processes: Map<string, ChildProcess>;
   private sshClients: Map<string, SSHClient>;
@@ -115,8 +122,6 @@ export class ConsoleManager extends EventEmitter implements CommandQueueHost {
   private maxBufferSize: number = 10000;
   private maxSessions: number = mcpConfig.maxSessions;
   private resourceMonitor: NodeJS.Timeout | null = null;
-  private monitoringSystem: MonitoringSystem;
-  private monitoringSystems: Map<string, MonitoringSystem>;
   private retryAttempts: Map<string, number>;
   private sessionHealthCheckIntervals: Map<string, NodeJS.Timeout>;
   private configManager: ConfigManager;
@@ -132,12 +137,25 @@ export class ConsoleManager extends EventEmitter implements CommandQueueHost {
   private sessionValidator: SessionValidator;
   private errorRecovery: ErrorRecovery;
 
-  // Self-healing and health monitoring components
-  private healthMonitor: HealthMonitor;
-  private heartbeatMonitor: HeartbeatMonitor;
-  private sessionRecovery: SessionRecovery;
-  private metricsCollector: MetricsCollector;
-  private sshKeepAlive: SSHConnectionKeepAlive;
+  // Self-healing and health monitoring — owned by HealthOrchestrator
+  private healthOrchestrator!: HealthOrchestrator;
+
+  // Convenience getters for sub-components (backwards compat within ConsoleManager)
+  private get healthMonitor(): HealthMonitor {
+    return this.healthOrchestrator.getHealthMonitor();
+  }
+  private get heartbeatMonitor(): HeartbeatMonitor {
+    return this.healthOrchestrator.getHeartbeatMonitor();
+  }
+  private get sessionRecovery(): SessionRecovery {
+    return this.healthOrchestrator.getSessionRecovery();
+  }
+  private get metricsCollector(): MetricsCollector {
+    return this.healthOrchestrator.getMetricsCollector();
+  }
+  private get sshKeepAlive(): SSHConnectionKeepAlive {
+    return this.healthOrchestrator.getSSHKeepAlive();
+  }
 
   // Protocol Factory and unified protocol management
   private protocolFactory: ProtocolFactory;
@@ -261,13 +279,6 @@ export class ConsoleManager extends EventEmitter implements CommandQueueHost {
 
   private autoRecoveryEnabled = true;
   private predictiveHealingEnabled = true;
-  private healingStats = {
-    totalHealingAttempts: 0,
-    successfulHealingAttempts: 0,
-    preventedFailures: 0,
-    automaticRecoveries: 0,
-    proactiveReconnections: 0,
-  };
 
   constructor(config?: {
     connectionPooling?: ConnectionPoolingOptions;
@@ -285,7 +296,6 @@ export class ConsoleManager extends EventEmitter implements CommandQueueHost {
     this.streamManagers = new Map();
     this.rdpSessions = new Map();
     this.sessionHealthCheckIntervals = new Map();
-    this.monitoringSystems = new Map();
 
     // Legacy session tracking (to be fully migrated)
     this.winrmProtocols = new Map();
@@ -312,7 +322,6 @@ export class ConsoleManager extends EventEmitter implements CommandQueueHost {
     this.promptDetector = new PromptDetector();
     this.logger = new Logger('ConsoleManager');
     this.queue = new PQueue({ concurrency: 10 });
-    this.monitoringSystem = new MonitoringSystem();
     this.retryAttempts = new Map();
     this.configManager = ConfigManager.getInstance();
 
@@ -423,6 +432,15 @@ export class ConsoleManager extends EventEmitter implements CommandQueueHost {
 
     // Initialize session persistence manager
     this.persistenceManager = new SessionPersistenceManager(this.logger);
+
+    // Initialize HealthOrchestrator (creates sub-components, but does not start monitoring yet)
+    this.healthOrchestrator = new HealthOrchestrator(
+      this.logger,
+      this.buildHealthOrchestratorHost(),
+      this.buildHealthOrchestratorConfig(),
+      this.networkMetricsManager,
+      this.persistenceManager
+    );
 
     this.commandQueueManager = new CommandQueueManager(
       this.logger,
@@ -1005,670 +1023,134 @@ export class ConsoleManager extends EventEmitter implements CommandQueueHost {
   }
 
   /**
-   * Initialize all self-healing components with proper configuration
+   * Build config for HealthOrchestrator from hardcoded values
+   * that previously lived in initializeSelfHealingComponents().
    */
-  private initializeSelfHealingComponents(): void {
-    // Initialize HealthMonitor with comprehensive system monitoring
-    this.healthMonitor = new HealthMonitor({
-      checkInterval: 30000, // 30 seconds
-      thresholds: {
-        cpu: 80,
-        memory: 85,
-        disk: 90,
-        networkLatency: 5000,
-        processResponseTime: 5000,
-        sshConnectionLatency: 2000,
-        sshHealthScore: 70,
+  private buildHealthOrchestratorConfig(): HealthOrchestratorConfig {
+    return {
+      selfHealingEnabled: this.selfHealingEnabled,
+      predictiveHealingEnabled: this.predictiveHealingEnabled,
+      autoRecoveryEnabled: this.autoRecoveryEnabled,
+      healthMonitor: {
+        checkInterval: 30000,
+        thresholds: {
+          cpu: 80,
+          memory: 85,
+          disk: 90,
+          networkLatency: 5000,
+          processResponseTime: 5000,
+          sshConnectionLatency: 2000,
+          sshHealthScore: 70,
+        },
       },
-    });
-
-    // Initialize HeartbeatMonitor for session health tracking with SSH proactive reconnection
-    this.heartbeatMonitor = new HeartbeatMonitor({
-      interval: 60000, // 1 minute
-      timeout: 10000, // 10 seconds
-      maxMissedBeats: 3,
-      enableAdaptiveInterval: true,
-      enablePredictiveFailure: this.predictiveHealingEnabled,
-      retryAttempts: 3,
-      retryDelay: 2000,
-      gracePeriod: 5000,
-      // SSH-specific proactive reconnection settings
-      sshHeartbeatInterval: 30000, // 30 seconds for SSH sessions
-      sshTimeoutThreshold: 15000, // 15 seconds SSH timeout threshold
-      enableSSHProactiveReconnect: true,
-      sshFailureRiskThreshold: 0.65, // Trigger proactive reconnect at 65% risk
-    });
-
-    // Initialize SessionRecovery with multiple strategies
-    this.sessionRecovery = new SessionRecovery({
-      enabled: true,
-      maxRecoveryAttempts: 3,
-      recoveryDelay: 5000,
-      backoffMultiplier: 2,
-      maxBackoffDelay: 60000,
-      persistenceEnabled: true,
-      persistencePath: './data/session-snapshots',
-      enableSmartRecovery: true,
-      snapshotInterval: 300000, // 5 minutes
-      recoveryTimeout: 120000,
-    });
-
-    // Initialize MetricsCollector for comprehensive monitoring
-    this.metricsCollector = new MetricsCollector({
-      enabled: true,
-      collectionInterval: 10000, // 10 seconds
-      retentionPeriod: 24 * 60 * 60 * 1000, // 24 hours
-      aggregationWindow: 60000, // 1 minute
-      enableRealTimeMetrics: true,
-      enableHistoricalMetrics: true,
-      enablePredictiveMetrics: this.predictiveHealingEnabled,
-      persistenceEnabled: true,
-      persistencePath: './data/metrics',
-      exportFormats: ['json', 'csv', 'prometheus'],
-      alertThresholds: {
-        errorRate: 0.05,
-        responseTime: 5000,
-        throughput: 10,
-        availability: 0.99,
+      heartbeatMonitor: {
+        interval: 60000,
+        timeout: 10000,
+        maxMissedBeats: 3,
+        enableAdaptiveInterval: true,
+        retryAttempts: 3,
+        retryDelay: 2000,
+        gracePeriod: 5000,
+        sshHeartbeatInterval: 30000,
+        sshTimeoutThreshold: 15000,
+        enableSSHProactiveReconnect: true,
+        sshFailureRiskThreshold: 0.65,
       },
-    });
-
-    // Initialize SSH KeepAlive for connection maintenance with production-ready configuration
-    this.sshKeepAlive = new SSHConnectionKeepAlive({
-      enabled: true,
-      // Aggressive keepalive for long-running operations
-      keepAliveInterval: 15000, // 15 seconds - more frequent for better stability
-      keepAliveCountMax: 6, // Allow more failures before declaring connection dead
-      // Server alive configuration for detecting unresponsive servers
-      serverAliveInterval: 30000, // 30 seconds - more frequent server checks
-      serverAliveCountMax: 5, // Allow more server alive failures
-      connectionTimeout: 20000, // 20 second timeout for keepalive operations
-      // Enhanced reconnection strategy
-      reconnectOnFailure: true,
-      maxReconnectAttempts: 8, // More reconnection attempts for unstable networks
-      reconnectDelay: 3000, // Start with shorter delay
-      backoffMultiplier: 1.5, // More gradual backoff
-      maxReconnectDelay: 45000, // Cap at 45 seconds instead of 60
-      // Advanced features for production stability
-      enableAdaptiveKeepAlive: true, // Adjust intervals based on network conditions
-      enablePredictiveReconnect: this.predictiveHealingEnabled,
-      connectionHealthThreshold: 65, // Lower threshold for more proactive healing
-    });
-
-    // Start proactive health monitoring for production environments
-    if (
-      process.env.NODE_ENV === 'production' ||
-      process.env.ENABLE_PROACTIVE_MONITORING === 'true'
-    ) {
-      this.sshKeepAlive.startProactiveMonitoring(3); // Every 3 minutes in production
-      this.logger.info(
-        'Proactive health monitoring enabled (3-minute intervals)'
-      );
-    } else {
-      this.sshKeepAlive.startProactiveMonitoring(10); // Every 10 minutes in development
-      this.logger.info(
-        'Proactive health monitoring enabled (10-minute intervals)'
-      );
-    }
-
-    this.logger.info('Self-healing components initialized successfully');
+      sessionRecovery: {
+        enabled: true,
+        maxRecoveryAttempts: 3,
+        recoveryDelay: 5000,
+        backoffMultiplier: 2,
+        maxBackoffDelay: 60000,
+        persistenceEnabled: true,
+        persistencePath: './data/session-snapshots',
+        enableSmartRecovery: true,
+        snapshotInterval: 300000,
+        recoveryTimeout: 120000,
+      },
+      metricsCollector: {
+        enabled: true,
+        collectionInterval: 10000,
+        retentionPeriod: 24 * 60 * 60 * 1000,
+        aggregationWindow: 60000,
+        enableRealTimeMetrics: true,
+        enableHistoricalMetrics: true,
+        persistenceEnabled: true,
+        persistencePath: './data/metrics',
+        exportFormats: ['json', 'csv', 'prometheus'],
+        alertThresholds: {
+          errorRate: 0.05,
+          responseTime: 5000,
+          throughput: 10,
+          availability: 0.99,
+        },
+      },
+      sshKeepAlive: {
+        enabled: true,
+        keepAliveInterval: 15000,
+        keepAliveCountMax: 6,
+        serverAliveInterval: 30000,
+        serverAliveCountMax: 5,
+        connectionTimeout: 20000,
+        reconnectOnFailure: true,
+        maxReconnectAttempts: 8,
+        reconnectDelay: 3000,
+        backoffMultiplier: 1.5,
+        maxReconnectDelay: 45000,
+        enableAdaptiveKeepAlive: true,
+        connectionHealthThreshold: 65,
+      },
+    };
   }
 
   /**
-   * Setup integration between self-healing components and ConsoleManager
+   * Build the HealthOrchestratorHost adapter that routes
+   * orchestrator callbacks back to ConsoleManager methods.
    */
-  private setupSelfHealingIntegration(): void {
-    if (!this.selfHealingEnabled) {
-      this.logger.info('Self-healing disabled, skipping integration setup');
-      return;
-    }
-
-    // Health Monitor Integration
-    this.healthMonitor.on('healthCheck', (result) => {
-      this.emit('system-health-check', result);
-
-      // Record metrics for health checks
-      this.metricsCollector.recordHealthCheck(
-        result.overall > 0.5,
-        'system-health',
-        0
-      );
-
-      // Trigger predictive healing if issues detected
-      if (result.overall < 0.7 && this.predictiveHealingEnabled) {
-        this.triggerPredictiveHealing('system-health-degradation', result);
-      }
-    });
-
-    this.healthMonitor.on('criticalIssue', async (issue) => {
-      this.logger.warn('Critical system issue detected:', issue);
-      this.healingStats.totalHealingAttempts++;
-
-      // Attempt automatic recovery
-      if (this.autoRecoveryEnabled) {
-        try {
-          await this.handleCriticalSystemIssue(issue);
-          this.healingStats.successfulHealingAttempts++;
-        } catch (error) {
-          this.logger.error(
-            'Failed to auto-recover from critical issue:',
-            error
-          );
-        }
-      }
-
-      this.emit('critical-system-issue', issue);
-    });
-
-    // Heartbeat Monitor Integration
-    this.heartbeatMonitor.on(
-      'heartbeatMissed',
-      async ({ sessionId, missedCount, lastHeartbeat }) => {
-        this.logger.warn(
-          `Heartbeat missed for session ${sessionId}: ${missedCount} missed, last: ${lastHeartbeat}`
-        );
-
-        // Record metrics - using recordSessionLifecycle for session events
-        // this.metricsCollector.recordSessionEvent(sessionId, 'heartbeat-missed', {
-        //   missedCount,
-        //   lastHeartbeat: new Date(lastHeartbeat)
-        // });
-
-        // Trigger session recovery if threshold exceeded
-        if (missedCount >= 3) {
-          await this.initiateSessionRecovery(sessionId, 'heartbeat-failure');
-        }
-      }
-    );
-
-    this.heartbeatMonitor.on(
-      'sessionUnhealthy',
-      async ({ sessionId, healthScore, issues }) => {
-        this.logger.warn(
-          `Session ${sessionId} unhealthy (score: ${healthScore}):`,
-          issues
-        );
-
-        // Record unhealthy session - using recordSessionLifecycle for session events
-        // this.metricsCollector.recordSessionEvent(sessionId, 'unhealthy', { healthScore, issues });
-
-        // Attempt recovery if auto-recovery enabled
-        if (this.autoRecoveryEnabled && healthScore < 0.3) {
-          await this.initiateSessionRecovery(sessionId, 'health-degradation');
-        }
-      }
-    );
-
-    // SSH Proactive Reconnection Integration
-    this.heartbeatMonitor.on(
-      'ssh-proactive-reconnect',
-      async ({
-        sessionId,
-        failureRisk,
-        heartbeat,
-        timestamp,
-        reason,
-        urgency,
-      }) => {
-        this.logger.warn(
-          `SSH proactive reconnection triggered for session ${sessionId} (risk: ${(failureRisk * 100).toFixed(1)}%, urgency: ${urgency})`
-        );
-
-        try {
-          // Get session info for SSH reconnection
-          const session = this.getSession(sessionId);
-          if (!session) {
-            this.logger.error(
-              `Cannot find session ${sessionId} for proactive reconnection`
-            );
-            return;
+  private buildHealthOrchestratorHost(): HealthOrchestratorHost {
+    return {
+      getSession: (id: string) => this.sessions.get(id),
+      getSessionIds: () => Array.from(this.sessions.keys()),
+      stopSession: (id: string) => this.stopSession(id),
+      createSession: (opts: any) => this.createSession(opts),
+      optimizeMemoryUsage: () => this.optimizeMemoryUsage(),
+      throttleOperations: () => this.throttleOperations(),
+      cleanupTemporaryFiles: () => this.cleanupTemporaryFiles(),
+      optimizeNetworkConnections: () => this.optimizeNetworkConnections(),
+      emitEvent: (event: string, data: any) => this.emit(event, data),
+      setQueueConcurrency: (n: number) => {
+        this.queue.concurrency = n;
+      },
+      trimOutputBuffers: (max: number) => {
+        for (const [, buffer] of Array.from(this.outputBuffers)) {
+          if (buffer.length > max) {
+            buffer.splice(0, buffer.length - max);
           }
-
-          // Update healing stats
-          this.healingStats.totalHealingAttempts++;
-          this.healingStats.proactiveReconnections =
-            (this.healingStats.proactiveReconnections || 0) + 1;
-
-          // Record metrics
-          this.metricsCollector.recordRecoveryAttempt(
-            false,
-            'ssh-proactive-reconnect',
-            0,
-            sessionId
-          );
-
-          // Emit event for external monitoring
-          this.emit('ssh-proactive-reconnect-triggered', {
-            sessionId,
-            failureRisk,
-            urgency,
-            timestamp,
-            reason,
-            sessionMetadata: {
-              hostname: heartbeat.sshHealthData?.hostname,
-              port: heartbeat.sshHealthData?.port,
-              connectionUptime: heartbeat.sshHealthData
-                ? Date.now() - heartbeat.lastBeat.getTime()
-                : 0,
-            },
-          });
-
-          // Attempt proactive SSH session reconnection
-          if (session.sshOptions) {
-            this.logger.info(
-              `Initiating proactive SSH reconnection for ${session.sshOptions.host}:${session.sshOptions.port}`
-            );
-
-            // Stop current session gracefully
-            await this.stopSession(sessionId);
-
-            // Wait a brief moment for cleanup
-            await new Promise((resolve) => setTimeout(resolve, 1000));
-
-            // Recreate session with same options
-            let newSessionResult: {
-              success: boolean;
-              sessionId?: string;
-              error?: string;
-            };
-            try {
-              const newSessionId = await this.createSession({
-                command: session.command,
-                args: session.args,
-                cwd: session.cwd,
-                env: session.env,
-                sshOptions: session.sshOptions,
-                streaming: session.streaming,
-                timeout: session.timeout || 120000, // Use session timeout or 2 minute default
-                monitoring: {
-                  enableMetrics: true,
-                  enableTracing: false,
-                  enableProfiling: false,
-                  enableAuditing: false,
-                },
-              });
-              newSessionResult = {
-                success: true,
-                sessionId: newSessionId,
-                error: undefined,
-              };
-            } catch (error) {
-              newSessionResult = {
-                success: false,
-                sessionId: undefined,
-                error: error instanceof Error ? error.message : String(error),
-              };
-            }
-
-            if (newSessionResult.success) {
-              this.logger.info(
-                `Successfully reconnected SSH session ${sessionId} -> ${newSessionResult.sessionId} (risk prevention)`
-              );
-              this.healingStats.successfulHealingAttempts++;
-              this.healingStats.automaticRecoveries++;
-
-              // Record successful proactive reconnection
-              this.metricsCollector.recordRecoveryAttempt(
-                true,
-                'ssh-proactive-reconnect',
-                Date.now() - timestamp.getTime(),
-                newSessionResult.sessionId
-              );
-
-              // Update session mapping for continuity
-              this.emit('ssh-proactive-reconnect-success', {
-                oldSessionId: sessionId,
-                newSessionId: newSessionResult.sessionId,
-                failureRisk,
-                reconnectionTime: Date.now() - timestamp.getTime(),
-              });
-            } else {
-              this.logger.error(
-                `Failed to proactively reconnect SSH session ${sessionId}: ${newSessionResult.error}`
-              );
-              this.emit('ssh-proactive-reconnect-failed', {
-                sessionId,
-                failureRisk,
-                error: newSessionResult.error,
-                reconnectionTime: Date.now() - timestamp.getTime(),
-              });
-            }
-          } else {
-            this.logger.warn(
-              `Session ${sessionId} flagged for proactive reconnection but has no SSH options`
-            );
-          }
-        } catch (error) {
-          const errorMessage =
-            error instanceof Error ? error.message : String(error);
-          this.logger.error(
-            `Error during SSH proactive reconnection for session ${sessionId}: ${errorMessage}`
-          );
-
-          this.emit('ssh-proactive-reconnect-failed', {
-            sessionId,
-            failureRisk,
-            error: errorMessage,
-            reconnectionTime: Date.now() - timestamp.getTime(),
-          });
         }
-      }
-    );
-
-    // Session Recovery Integration
-    this.sessionRecovery.on(
-      'recoveryAttempted',
-      ({ sessionId, strategy, success, duration, metadata }) => {
-        this.logger.info(
-          `Session recovery attempted: ${sessionId}, strategy: ${strategy}, success: ${success}`
-        );
-
-        // Update healing stats
-        if (success) {
-          this.healingStats.successfulHealingAttempts++;
-          this.healingStats.automaticRecoveries++;
-        }
-        this.healingStats.totalHealingAttempts++;
-
-        // Record recovery metrics
-        this.metricsCollector.recordRecoveryAttempt(
-          success,
-          strategy,
-          duration,
-          sessionId
-        );
-
-        this.emit('session-recovery-attempted', {
-          sessionId,
-          strategy,
-          success,
-          duration,
-          metadata,
-        });
-      }
-    );
-
-    this.sessionRecovery.on(
-      'recoveryFailed',
-      ({ sessionId, strategy, error, attempts }) => {
-        this.logger.error(
-          `Session recovery failed: ${sessionId}, strategy: ${strategy}, attempts: ${attempts}`,
-          error
-        );
-
-        // Try alternative recovery if available
-        if (attempts < 3) {
-          setTimeout(
-            () => {
-              this.sessionRecovery.recoverSession(sessionId, 'recovery-retry');
-            },
-            Math.pow(2, attempts) * 1000
-          ); // Exponential backoff
-        }
-
-        this.emit('session-recovery-failed', {
-          sessionId,
-          strategy,
-          error,
-          attempts,
-        });
-      }
-    );
-
-    // Handle new interactive prompt recovery events
-    this.sessionRecovery.on(
-      'session-interrupt-request',
-      this.handleSessionInterruptRequest.bind(this)
-    );
-    this.sessionRecovery.on(
-      'session-prompt-reset-request',
-      this.handlePromptResetRequest.bind(this)
-    );
-    this.sessionRecovery.on(
-      'session-refresh-request',
-      this.handleSessionRefreshRequest.bind(this)
-    );
-    this.sessionRecovery.on(
-      'session-command-retry-request',
-      this.handleCommandRetryRequest.bind(this)
-    );
-    this.sessionRecovery.on(
-      'interactive-state-updated',
-      this.handleInteractiveStateUpdate.bind(this)
-    );
-
-    // Metrics Collector Integration
-    this.metricsCollector.on('alertThresholdExceeded', (alert) => {
-      this.logger.warn('Metrics alert triggered:', alert);
-
-      // Trigger appropriate healing actions based on alert type
-      if (alert.metric === 'errorRate' && alert.value > 0.1) {
-        this.triggerSystemHealingMode('high-error-rate');
-      } else if (alert.metric === 'sessionFailureRate' && alert.value > 0.05) {
-        this.enhanceSessionMonitoring();
-      }
-
-      this.emit('metrics-alert', alert);
-    });
-
-    this.metricsCollector.on('trendPrediction', (prediction) => {
-      if (this.predictiveHealingEnabled && prediction.confidence > 0.8) {
-        this.logger.info('Predictive trend detected:', prediction);
-        this.triggerPredictiveHealing('trend-prediction', prediction);
-        this.healingStats.preventedFailures++;
-      }
-    });
-
-    // SSH KeepAlive Integration
-    this.sshKeepAlive.on(
-      'keepAliveSuccess',
-      ({ connectionId, responseTime }) => {
-        // Record successful keep-alive
-        this.metricsCollector.recordConnectionMetrics(
-          true,
-          responseTime,
-          'ssh'
-        );
-      }
-    );
-
-    this.sshKeepAlive.on(
-      'keepAliveFailed',
-      async ({ connectionId, error, consecutiveFailures }) => {
-        this.logger.warn(
-          `SSH keep-alive failed for ${connectionId}: ${consecutiveFailures} consecutive failures`,
-          error
-        );
-
-        // Record failed keep-alive
-        this.metricsCollector.recordConnectionMetrics(false, 0, 'ssh');
-
-        // Trigger reconnection if threshold exceeded
-        if (consecutiveFailures >= 3) {
-          await this.handleSSHConnectionFailure(connectionId, error);
-        }
-      }
-    );
-
-    this.sshKeepAlive.on(
-      'connectionDegraded',
-      ({ connectionId, responseTime, trend }) => {
-        this.logger.info(
-          `SSH connection ${connectionId} showing degradation: ${responseTime}ms (trend: ${trend})`
-        );
-
-        if (this.predictiveHealingEnabled && trend > 0.3) {
-          // Proactively establish backup connection
-          this.prepareBackupSSHConnection(connectionId);
-        }
-      }
-    );
-
-    // Server Alive Monitoring Integration
-    this.sshKeepAlive.on(
-      'server-alive-success',
-      ({ connectionId, responseTime, timestamp }) => {
-        this.logger.debug(
-          `Server alive check successful for ${connectionId}: ${responseTime}ms`
-        );
-        // Record server alive metrics
-        this.metricsCollector.recordConnectionMetrics(
-          true,
-          responseTime,
-          'ssh-server-alive'
-        );
-      }
-    );
-
-    this.sshKeepAlive.on(
-      'server-alive-failed',
-      async ({ connectionId, error, timestamp }) => {
-        this.logger.warn(
-          `Server alive check failed for ${connectionId}: ${error}`
-        );
-        // Record server alive failure
-        this.metricsCollector.recordConnectionMetrics(
-          false,
-          0,
-          'ssh-server-alive'
-        );
-
-        // Server alive failures indicate potential server-side issues
-        this.emit('ssh-server-unresponsive', {
-          connectionId,
-          error,
-          timestamp,
-        });
-      }
-    );
-
-    // Proactive Health Monitoring Integration
-    this.sshKeepAlive.on('proactive-health-check-completed', (results) => {
-      this.logger.info('Proactive health check results:', {
-        total: results.totalConnections,
-        healthy: results.healthyConnections,
-        degraded: results.degradedConnections,
-        critical: results.criticalConnections,
-        recommendations: results.recommendations.length,
-      });
-
-      // Log recommendations for operational awareness
-      if (results.recommendations.length > 0) {
-        this.logger.warn(
-          'Health check recommendations:',
-          results.recommendations
-        );
-      }
-
-      // Emit for external monitoring systems
-      this.emit('proactive-health-check-completed', results);
-    });
-
-    // Start all monitoring services
-    this.healthMonitor.start();
-    this.heartbeatMonitor.start();
-    this.metricsCollector.start();
-
-    this.logger.info('Self-healing integration setup completed');
+      },
+      handleSessionInterruptRequest: (data: any) =>
+        this.handleSessionInterruptRequest(data),
+      handlePromptResetRequest: (data: any) =>
+        this.handlePromptResetRequest(data),
+      handleSessionRefreshRequest: (data: any) =>
+        this.handleSessionRefreshRequest(data),
+      handleCommandRetryRequest: (data: any) =>
+        this.handleCommandRetryRequest(data),
+      handleInteractiveStateUpdate: (data: any) =>
+        this.handleInteractiveStateUpdate(data),
+      isSelfHealingEnabled: () => this.selfHealingEnabled,
+      getKnownHosts: () => this.getKnownHosts(),
+    };
   }
 
-  private async handleCriticalSystemIssue(issue: { type: string }): Promise<void> {
-    this.logger.info(
-      `Attempting to handle critical system issue: ${issue.type}`
-    );
+  // initializeSelfHealingComponents() — removed, now in HealthOrchestrator.initializeComponents()
 
-    switch (issue.type) {
-      case 'high-memory-usage':
-        await this.optimizeMemoryUsage();
-        break;
-      case 'high-cpu-usage':
-        await this.throttleOperations();
-        break;
-      case 'disk-space-low':
-        await this.cleanupTemporaryFiles();
-        break;
-      case 'network-degradation':
-        await this.optimizeNetworkConnections();
-        break;
-      default:
-        this.logger.warn(`No specific handler for issue type: ${issue.type}`);
-    }
-  }
+  // setupSelfHealingIntegration() — removed, now in HealthOrchestrator.setupEventWiring()
 
-  private async initiateSessionRecovery(
-    sessionId: string,
-    reason: string
-  ): Promise<void> {
-    this.logger.info(
-      `Initiating session recovery for ${sessionId}, reason: ${reason}`
-    );
-
-    const session = this.sessions.get(sessionId);
-    if (session) {
-      await this.sessionRecovery.recoverSession(sessionId, reason);
-    }
-  }
-
-  private triggerPredictiveHealing(trigger: string, data: unknown): void {
-    this.logger.info(`Predictive healing triggered: ${trigger}`, data);
-    this.emit('predictive-healing-triggered', {
-      trigger,
-      data,
-      timestamp: new Date(),
-    });
-  }
-
-  private triggerSystemHealingMode(reason: string): void {
-    this.logger.warn(`System healing mode activated: ${reason}`);
-    // Implement system-wide healing actions
-    this.emit('system-healing-mode-activated', {
-      reason,
-      timestamp: new Date(),
-    });
-  }
-
-  private enhanceSessionMonitoring(): void {
-    // Reduce heartbeat intervals for closer monitoring
-    // Note: HeartbeatMonitor doesn't have setAdaptiveMode method
-    // this.heartbeatMonitor.setAdaptiveMode(true);
-    this.logger.info('Enhanced session monitoring activated');
-  }
-
-  private async handleSSHConnectionFailure(
-    connectionId: string,
-    error: Error
-  ): Promise<void> {
-    this.logger.info(`Handling SSH connection failure: ${connectionId}`);
-
-    // Use connection pool's circuit breaker and retry logic
-    // Note: handleConnectionFailure is private in ConnectionPool
-    try {
-      // await this.connectionPool.handleConnectionFailure(connectionId, error);
-      this.logger.info(
-        `Connection failure handled for ${connectionId}: ${error.message}`
-      );
-      this.emit('ssh-connection-failure-detected', { connectionId, error });
-    } catch (poolError) {
-      this.logger.error(
-        'Connection pool failed to handle SSH connection failure:',
-        poolError
-      );
-      this.emit('ssh-connection-recovery-failed', {
-        connectionId,
-        originalError: error,
-        poolError,
-      });
-    }
-  }
-
-  private prepareBackupSSHConnection(connectionId: string): void {
-    this.logger.info(`Preparing backup SSH connection for ${connectionId}`);
-    // Logic to preemptively establish backup connections
-    this.emit('backup-connection-preparing', {
-      connectionId,
-      timestamp: new Date(),
-    });
-  }
+  // Decision methods (handleCriticalSystemIssue, initiateSessionRecovery,
+  // triggerPredictiveHealing, triggerSystemHealingMode, enhanceSessionMonitoring,
+  // handleSSHConnectionFailure, prepareBackupSSHConnection) moved to
+  // HealthOrchestrator.setupEventWiring() in Phase B.
 
   private async optimizeMemoryUsage(): Promise<void> {
     this.logger.info('Optimizing memory usage');
@@ -3116,14 +2598,14 @@ export class ConsoleManager extends EventEmitter implements CommandQueueHost {
     sessionHealth: Map<string, any>;
     connectionHealth: Map<string, any>;
     metrics: unknown;
-    healingStats: typeof this.healingStats;
+    healingStats: ReturnType<HealthOrchestrator['getHealingStats']>;
   }> {
     const result = {
       systemHealth: null as unknown,
       sessionHealth: new Map<string, any>(),
       connectionHealth: new Map<string, any>(),
       metrics: null as unknown,
-      healingStats: { ...this.healingStats },
+      healingStats: this.healthOrchestrator.getHealingStats(),
     };
 
     if (this.selfHealingEnabled) {
@@ -3199,52 +2681,22 @@ export class ConsoleManager extends EventEmitter implements CommandQueueHost {
     this.selfHealingEnabled = enabled;
 
     if (enabled && !wasEnabled) {
-      // Re-initialize and start components
-      this.initializeSelfHealingComponents();
-      this.setupSelfHealingIntegration();
+      this.healthOrchestrator.start();
       this.logger.info('Self-healing enabled');
     } else if (!enabled && wasEnabled) {
-      // Stop all health monitoring
-      this.healthMonitor?.stop();
-      this.heartbeatMonitor?.stop();
-      this.metricsCollector?.stop();
+      this.healthOrchestrator.stop();
       this.logger.info('Self-healing disabled');
     }
   }
 
-  /**
-   * Enable or disable predictive healing
-   */
   public setPredictiveHealingEnabled(enabled: boolean): void {
     this.predictiveHealingEnabled = enabled;
-
-    if (this.selfHealingEnabled) {
-      // Update components with new predictive setting
-      // Note: These methods don't exist on the monitoring classes
-      // Predictive analysis is configured during component initialization
-      this.logger.debug(
-        `Predictive healing setting updated but requires component restart to take effect`
-      );
-    }
-
-    this.logger.info(`Predictive healing ${enabled ? 'enabled' : 'disabled'}`);
+    this.healthOrchestrator.setPredictiveHealingEnabled(enabled);
   }
 
-  /**
-   * Enable or disable automatic recovery
-   */
   public setAutoRecoveryEnabled(enabled: boolean): void {
     this.autoRecoveryEnabled = enabled;
-
-    if (this.selfHealingEnabled) {
-      // Note: setAutoRecoveryEnabled method doesn't exist on HealthMonitor
-      // Auto recovery is configured during initialization via config.recovery.enabled
-      this.logger.debug(
-        `Auto recovery setting updated but requires component restart to take effect`
-      );
-    }
-
-    this.logger.info(`Auto-recovery ${enabled ? 'enabled' : 'disabled'}`);
+    this.healthOrchestrator.setAutoRecoveryEnabled(enabled);
   }
 
   /**
@@ -3348,201 +2800,58 @@ export class ConsoleManager extends EventEmitter implements CommandQueueHost {
   /**
    * Get current self-healing configuration
    */
-  public getSelfHealingConfig(): {
-    selfHealingEnabled: boolean;
-    autoRecoveryEnabled: boolean;
-    predictiveHealingEnabled: boolean;
-    healingStats: typeof this.healingStats;
-  } {
-    return {
-      selfHealingEnabled: this.selfHealingEnabled,
-      autoRecoveryEnabled: this.autoRecoveryEnabled,
-      predictiveHealingEnabled: this.predictiveHealingEnabled,
-      healingStats: { ...this.healingStats },
-    };
+  public getSelfHealingConfig(): ReturnType<HealthOrchestrator['getSelfHealingConfig']> {
+    return this.healthOrchestrator.getSelfHealingConfig();
   }
 
-  /**
-   * Shutdown all self-healing components cleanly
-   */
-  private async shutdownSelfHealingComponents(): Promise<void> {
-    try {
-      this.logger.info('Shutting down self-healing components...');
-
-      // Stop all monitoring services
-      if (this.healthMonitor) {
-        await this.healthMonitor.stop();
-      }
-
-      if (this.heartbeatMonitor) {
-        await this.heartbeatMonitor.stop();
-      }
-
-      if (this.metricsCollector) {
-        await this.metricsCollector.stop();
-      }
-
-      if (this.sshKeepAlive) {
-        await this.sshKeepAlive.stop();
-      }
-
-      if (this.sessionRecovery) {
-        await this.sessionRecovery.stop();
-      }
-
-      this.logger.info('Self-healing components shutdown complete');
-    } catch (error) {
-      this.logger.error(
-        'Error during self-healing components shutdown:',
-        error
-      );
-      // Continue with shutdown even if some components fail to stop cleanly
-    }
-  }
+  // shutdownSelfHealingComponents() — removed, now in HealthOrchestrator.stop()
 
   /**
-   * Register a newly created session with all health monitoring components
+   * Register a newly created session with health monitoring (delegates to orchestrator).
    */
   private async registerSessionWithHealthMonitoring(
     sessionId: string,
     session: ConsoleSession,
     options: SessionOptions
   ): Promise<void> {
-    try {
-      // Register with heartbeat monitor (with SSH-specific health monitoring)
-      this.heartbeatMonitor.addSession(
-        sessionId,
-        {
-          id: sessionId,
-          createdAt: session.createdAt,
-          lastActivity: new Date(),
-          status:
-            session.status === 'crashed'
-              ? 'failed'
-              : (session.status as
-                  | 'running'
-                  | 'failed'
-                  | 'paused'
-                  | 'stopped'
-                  | 'initializing'
-                  | 'recovering'),
-          type: options.sshOptions ? 'ssh' : 'local',
-          pid: session.pid,
-          healthScore: 100,
-          recoveryAttempts: 0,
-          maxRecoveryAttempts: 3,
-          metadata: {
-            command: session.command,
-            args: session.args || [],
-          },
-        },
-        options.sshOptions
-          ? {
-              hostname: options.sshOptions.host,
-              port: options.sshOptions.port || 22,
-              username: options.sshOptions.username || 'unknown',
-            }
-          : undefined
-      );
-
-      // Record session creation metrics
-      this.metricsCollector.recordSessionLifecycle(
-        'created',
-        sessionId,
-        session.type
-      );
-
-      // Create initial snapshot for session recovery
-      const snapshotData = {
-        sessionId,
+    await this.healthOrchestrator.onSessionCreated(
+      sessionId,
+      {
+        createdAt: session.createdAt,
+        status: session.status,
+        type: session.type,
+        pid: session.pid,
         command: session.command,
         args: session.args,
         cwd: session.cwd,
-        env: session.env,
-        consoleType: session.type,
-        sshOptions: options.sshOptions,
+        env: session.env as Record<string, string> | undefined,
+        sshOptions: options.sshOptions
+          ? {
+              host: options.sshOptions.host,
+              port: options.sshOptions.port,
+              username: options.sshOptions.username,
+            }
+          : undefined,
         streaming: options.streaming,
-        createdAt: session.createdAt,
-        status: session.status,
-      };
-
-      await this.sessionRecovery.registerSession(
-        sessionId,
-        {
-          id: sessionId,
-          createdAt: session.createdAt,
-          lastActivity: new Date(),
-          status:
-            session.status === 'crashed'
-              ? 'failed'
-              : (session.status as
-                  | 'running'
-                  | 'failed'
-                  | 'paused'
-                  | 'stopped'
-                  | 'initializing'
-                  | 'recovering'),
-          type: options.sshOptions ? 'ssh' : 'local',
-          pid: session.pid,
-          healthScore: 100,
-          recoveryAttempts: 0,
-          maxRecoveryAttempts: 3,
-          metadata: {
-            command: session.command,
-            args: session.args || [],
-          },
-        },
-        options
-      );
-
-      this.logger.debug(
-        `Session ${sessionId} registered with health monitoring components`
-      );
-    } catch (error) {
-      this.logger.warn(
-        `Failed to register session ${sessionId} with health monitoring:`,
-        error
-      );
-      // Don't throw error as this is non-critical for session creation
-    }
+      },
+      options
+    );
   }
 
   /**
-   * Unregister a session from all health monitoring components
+   * Unregister a session from health monitoring (delegates to orchestrator).
    */
   private async unregisterSessionFromHealthMonitoring(
     sessionId: string,
     reason: string = 'session-terminated'
   ): Promise<void> {
-    try {
-      // Remove from heartbeat monitoring
-      this.heartbeatMonitor.removeSession(sessionId);
-
-      // Record session termination metrics
-      const session = this.sessions.get(sessionId);
-      const duration = session
-        ? Date.now() - session.createdAt.getTime()
-        : undefined;
-      this.metricsCollector.recordSessionLifecycle(
-        'terminated',
-        sessionId,
-        session?.type || 'unknown',
-        duration
-      );
-
-      // Clean up recovery snapshots
-      await this.sessionRecovery.unregisterSession(sessionId);
-
-      this.logger.debug(
-        `Session ${sessionId} unregistered from health monitoring (reason: ${reason})`
-      );
-    } catch (error) {
-      this.logger.warn(
-        `Failed to unregister session ${sessionId} from health monitoring:`,
-        error
-      );
-      // Continue with session cleanup even if health monitoring cleanup fails
-    }
+    const session = this.sessions.get(sessionId);
+    await this.healthOrchestrator.onSessionDestroyed(
+      sessionId,
+      session?.type,
+      session?.createdAt,
+      reason
+    );
   }
 
   private async handleSessionError(
@@ -3863,15 +3172,6 @@ export class ConsoleManager extends EventEmitter implements CommandQueueHost {
         );
       });
 
-      // Start monitoring if enabled
-      if (options.monitoring) {
-        await this.monitoringSystem.startSessionMonitoring(sessionId, {
-          command: options.command,
-          args: options.args || [],
-          ...options.monitoring,
-        });
-      }
-
       this.emitEvent({
         sessionId,
         type: 'started',
@@ -4035,15 +3335,6 @@ export class ConsoleManager extends EventEmitter implements CommandQueueHost {
         sessionType: sessionType,
       });
 
-      // Start monitoring if enabled
-      if (options.monitoring) {
-        await this.monitoringSystem.startSessionMonitoring(sessionId, {
-          command: options.command,
-          args: options.args || [],
-          ...options.monitoring,
-        });
-      }
-
       this.emitEvent({
         sessionId,
         type: 'started',
@@ -4156,15 +3447,6 @@ export class ConsoleManager extends EventEmitter implements CommandQueueHost {
         sessionType:
           options.consoleType === 'docker-exec' ? 'docker-exec' : 'docker',
       });
-
-      // Start monitoring if enabled
-      if (options.monitoring) {
-        await this.monitoringSystem.startSessionMonitoring(sessionId, {
-          command: options.command,
-          args: options.args || [],
-          ...options.monitoring,
-        });
-      }
 
       this.emitEvent({
         sessionId,
@@ -4611,38 +3893,6 @@ export class ConsoleManager extends EventEmitter implements CommandQueueHost {
       });
       this.streamManagers.set(sessionId, streamManager);
 
-      // Set up monitoring
-      if (options.monitoring) {
-        const monitoringSystem = new MonitoringSystem({
-          anomalyDetection: {
-            enabled: options.monitoring.enableAnomalyDetection || false,
-            windowSize: 100,
-            confidenceLevel: 0.95,
-          },
-          alerting: {
-            enabled: options.monitoring.enableAuditing || false,
-            channels: [
-              {
-                type: 'console',
-                config: {},
-              },
-            ],
-          },
-          auditing: {
-            enabled: false,
-            logDirectory: './logs',
-            encryption: false,
-            retention: 30,
-          },
-          performance: {
-            enabled: options.monitoring.enableProfiling || false,
-            samplingInterval: 1000,
-            profileDuration: 60000,
-          },
-        });
-        this.monitoringSystems.set(sessionId, monitoringSystem);
-      }
-
       // Initialize error detection for serial output
       if (options.detectErrors !== false) {
         const defaultPatterns = this.getDefaultSerialErrorPatterns();
@@ -4845,7 +4095,6 @@ export class ConsoleManager extends EventEmitter implements CommandQueueHost {
       this.streamManagers.delete(sessionId);
       // Cleanup pagination manager for this session
       this.paginationManager.removeSession(sessionId);
-      this.monitoringSystems.delete(sessionId);
 
       // Error patterns are global and don't need session-specific cleanup
     } catch (error) {
@@ -5502,16 +4751,6 @@ export class ConsoleManager extends EventEmitter implements CommandQueueHost {
 
       this.setupProcessHandlers(sessionId, childProcess, options);
 
-      // Start monitoring if enabled
-      if (options.monitoring) {
-        await this.monitoringSystem.startSessionMonitoring(sessionId, {
-          command: options.command,
-          args: options.args || [],
-          pid: childProcess.pid!,
-          ...options.monitoring,
-        });
-      }
-
       // Update session manager
       await this.sessionManager.updateSessionStatus(sessionId, 'running', {
         pid: childProcess.pid,
@@ -5624,15 +4863,6 @@ export class ConsoleManager extends EventEmitter implements CommandQueueHost {
         data: output,
       });
 
-      // Record output to monitoring system
-      if (this.monitoringSystem.isSessionBeingMonitored(sessionId)) {
-        this.monitoringSystem.recordEvent(sessionId, 'output', {
-          type: 'stdout',
-          size: text.length,
-          lineCount: text.split('\n').length - 1,
-        });
-      }
-
       // Update session activity
       this.sessionManager.updateSessionActivity(sessionId, {
         lastOutput: new Date(),
@@ -5663,14 +4893,6 @@ export class ConsoleManager extends EventEmitter implements CommandQueueHost {
               data: { errors, output: output.data },
             });
 
-            // Record error to monitoring system
-            if (this.monitoringSystem.isSessionBeingMonitored(sessionId)) {
-              this.monitoringSystem.recordEvent(sessionId, 'error', {
-                errorCount: errors.length,
-                errorTypes: errors.map((e) => e.pattern.type),
-                output: output.data,
-              });
-            }
           }
         });
       }
@@ -5700,15 +4922,6 @@ export class ConsoleManager extends EventEmitter implements CommandQueueHost {
         data: output,
       });
 
-      // Record stderr output to monitoring system
-      if (this.monitoringSystem.isSessionBeingMonitored(sessionId)) {
-        this.monitoringSystem.recordEvent(sessionId, 'output', {
-          type: 'stderr',
-          size: text.length,
-          lineCount: text.split('\n').length - 1,
-        });
-      }
-
       // Update session activity
       this.sessionManager.updateSessionActivity(sessionId, {
         lastError: new Date(),
@@ -5736,15 +4949,6 @@ export class ConsoleManager extends EventEmitter implements CommandQueueHost {
             data: { errors, output: output.data, isStderr: true },
           });
 
-          // Record stderr error to monitoring system
-          if (this.monitoringSystem.isSessionBeingMonitored(sessionId)) {
-            this.monitoringSystem.recordEvent(sessionId, 'error', {
-              errorCount: errors.length,
-              errorTypes: errors.map((e) => e.pattern.type),
-              output: output.data,
-              isStderr: true,
-            });
-          }
         }
       });
     });
@@ -5763,11 +4967,6 @@ export class ConsoleManager extends EventEmitter implements CommandQueueHost {
 
       // Update session manager
       this.sessionManager.updateSessionStatus(sessionId, 'stopped');
-
-      // Stop monitoring if active
-      if (this.monitoringSystem.isSessionBeingMonitored(sessionId)) {
-        this.monitoringSystem.stopSessionMonitoring(sessionId);
-      }
 
       this.emitEvent({
         sessionId,
@@ -5800,16 +4999,6 @@ export class ConsoleManager extends EventEmitter implements CommandQueueHost {
       this.sessionManager.updateSessionStatus(sessionId, 'failed', {
         error: error.message,
       });
-
-      // Record process error to monitoring system
-      if (this.monitoringSystem.isSessionBeingMonitored(sessionId)) {
-        this.monitoringSystem.recordEvent(sessionId, 'error', {
-          type: 'ssh_stream_error',
-          error: error.message,
-          stack: error.stack,
-        });
-        this.monitoringSystem.stopSessionMonitoring(sessionId);
-      }
 
       this.emitEvent({
         sessionId,
@@ -5976,15 +5165,6 @@ export class ConsoleManager extends EventEmitter implements CommandQueueHost {
           data: output,
         });
 
-        // Record output to monitoring system
-        if (this.monitoringSystem.isSessionBeingMonitored(sessionId)) {
-          this.monitoringSystem.recordEvent(sessionId, 'output', {
-            type: 'stdout',
-            size: text.length,
-            lineCount: text.split('\n').length - 1,
-          });
-        }
-
         if (options.detectErrors !== false) {
           this.queue.add(async () => {
             // Convert ErrorPattern[] to ExtendedErrorPattern[] if needed
@@ -6009,14 +5189,6 @@ export class ConsoleManager extends EventEmitter implements CommandQueueHost {
                 data: { errors, output: output.data },
               });
 
-              // Record error to monitoring system
-              if (this.monitoringSystem.isSessionBeingMonitored(sessionId)) {
-                this.monitoringSystem.recordEvent(sessionId, 'error', {
-                  errorCount: errors.length,
-                  errorTypes: errors.map((e) => e.pattern.type),
-                  output: output.data,
-                });
-              }
             }
           });
         }
@@ -6055,15 +5227,6 @@ export class ConsoleManager extends EventEmitter implements CommandQueueHost {
           data: output,
         });
 
-        // Record stderr output to monitoring system
-        if (this.monitoringSystem.isSessionBeingMonitored(sessionId)) {
-          this.monitoringSystem.recordEvent(sessionId, 'output', {
-            type: 'stderr',
-            size: text.length,
-            lineCount: text.split('\n').length - 1,
-          });
-        }
-
         // Always check stderr for errors
         this.queue.add(async () => {
           // Convert ErrorPattern[] to ExtendedErrorPattern[] if needed
@@ -6088,15 +5251,6 @@ export class ConsoleManager extends EventEmitter implements CommandQueueHost {
               data: { errors, output: output.data, isStderr: true },
             });
 
-            // Record stderr error to monitoring system
-            if (this.monitoringSystem.isSessionBeingMonitored(sessionId)) {
-              this.monitoringSystem.recordEvent(sessionId, 'error', {
-                errorCount: errors.length,
-                errorTypes: errors.map((e) => e.pattern.type),
-                output: output.data,
-                isStderr: true,
-              });
-            }
           }
         });
       });
@@ -6115,11 +5269,6 @@ export class ConsoleManager extends EventEmitter implements CommandQueueHost {
         streamManager.end();
       }
 
-      // Stop monitoring if active
-      if (this.monitoringSystem.isSessionBeingMonitored(sessionId)) {
-        this.monitoringSystem.stopSessionMonitoring(sessionId);
-      }
-
       this.emitEvent({
         sessionId,
         type: 'stopped',
@@ -6135,16 +5284,6 @@ export class ConsoleManager extends EventEmitter implements CommandQueueHost {
       if (session) {
         session.status = 'crashed';
         this.sessions.set(sessionId, session);
-      }
-
-      // Record process error to monitoring system
-      if (this.monitoringSystem.isSessionBeingMonitored(sessionId)) {
-        this.monitoringSystem.recordEvent(sessionId, 'error', {
-          type: 'process_error',
-          error: error.message,
-          stack: error.stack,
-        });
-        this.monitoringSystem.stopSessionMonitoring(sessionId);
       }
 
       // Try to recover from the error
@@ -6371,16 +5510,6 @@ export class ConsoleManager extends EventEmitter implements CommandQueueHost {
 
       // Configure prompt detection for legacy SSH session
       this.configurePromptDetection(sessionId, options);
-
-      // Start monitoring if enabled
-      if (options.monitoring) {
-        await this.monitoringSystem.startSessionMonitoring(sessionId, {
-          command: options.command!,
-          args: options.args || [],
-          pid: 0, // SSH connections don't have local PIDs
-          ...options.monitoring,
-        });
-      }
 
       this.emitEvent({
         sessionId,
@@ -6669,15 +5798,6 @@ export class ConsoleManager extends EventEmitter implements CommandQueueHost {
         data: output,
       });
 
-      // Record output to monitoring system
-      if (this.monitoringSystem.isSessionBeingMonitored(sessionId)) {
-        this.monitoringSystem.recordEvent(sessionId, 'output', {
-          type: 'stdout',
-          size: text.length,
-          lineCount: text.split('\n').length - 1,
-        });
-      }
-
       if (options.detectErrors !== false) {
         this.queue.add(async () => {
           // Convert ErrorPattern[] to ExtendedErrorPattern[] if needed
@@ -6702,14 +5822,6 @@ export class ConsoleManager extends EventEmitter implements CommandQueueHost {
               data: { errors, output: output.data },
             });
 
-            // Record error to monitoring system
-            if (this.monitoringSystem.isSessionBeingMonitored(sessionId)) {
-              this.monitoringSystem.recordEvent(sessionId, 'error', {
-                errorCount: errors.length,
-                errorTypes: errors.map((e) => e.pattern.type),
-                output: output.data,
-              });
-            }
           }
         });
       }
@@ -6738,15 +5850,6 @@ export class ConsoleManager extends EventEmitter implements CommandQueueHost {
         data: output,
       });
 
-      // Record stderr output to monitoring system
-      if (this.monitoringSystem.isSessionBeingMonitored(sessionId)) {
-        this.monitoringSystem.recordEvent(sessionId, 'output', {
-          type: 'stderr',
-          size: text.length,
-          lineCount: text.split('\n').length - 1,
-        });
-      }
-
       // Always check stderr for errors
       this.queue.add(async () => {
         // Convert ErrorPattern[] to ExtendedErrorPattern[] if needed
@@ -6768,15 +5871,6 @@ export class ConsoleManager extends EventEmitter implements CommandQueueHost {
             data: { errors, output: output.data, isStderr: true },
           });
 
-          // Record stderr error to monitoring system
-          if (this.monitoringSystem.isSessionBeingMonitored(sessionId)) {
-            this.monitoringSystem.recordEvent(sessionId, 'error', {
-              errorCount: errors.length,
-              errorTypes: errors.map((e) => e.pattern.type),
-              output: output.data,
-              isStderr: true,
-            });
-          }
         }
       });
     });
@@ -6791,11 +5885,6 @@ export class ConsoleManager extends EventEmitter implements CommandQueueHost {
 
       if (streamManager) {
         streamManager.end();
-      }
-
-      // Stop monitoring if active
-      if (this.monitoringSystem.isSessionBeingMonitored(sessionId)) {
-        this.monitoringSystem.stopSessionMonitoring(sessionId);
       }
 
       this.emitEvent({
@@ -6813,16 +5902,6 @@ export class ConsoleManager extends EventEmitter implements CommandQueueHost {
       if (session) {
         session.status = 'crashed';
         this.sessions.set(sessionId, session);
-      }
-
-      // Record SSH error to monitoring system
-      if (this.monitoringSystem.isSessionBeingMonitored(sessionId)) {
-        this.monitoringSystem.recordEvent(sessionId, 'error', {
-          type: 'ssh_channel_error',
-          error: error.message,
-          stack: error.stack,
-        });
-        this.monitoringSystem.stopSessionMonitoring(sessionId);
       }
 
       this.emitEvent({
@@ -7011,14 +6090,6 @@ export class ConsoleManager extends EventEmitter implements CommandQueueHost {
         if (error) {
           reject(error);
         } else {
-          // Record input to monitoring system
-          if (this.monitoringSystem.isSessionBeingMonitored(sessionId)) {
-            this.monitoringSystem.recordEvent(sessionId, 'input', {
-              size: input.length,
-              type: 'text_input',
-            });
-          }
-
           this.emitEvent({
             sessionId,
             type: 'input',
@@ -7051,14 +6122,6 @@ export class ConsoleManager extends EventEmitter implements CommandQueueHost {
       // Only exec sessions support input
       if (session.kubernetesState.sessionType === 'exec') {
         await this.kubernetesProtocol.sendInput(sessionId, input);
-
-        // Record input to monitoring system
-        if (this.monitoringSystem.isSessionBeingMonitored(sessionId)) {
-          this.monitoringSystem.recordEvent(sessionId, 'input', {
-            size: input.length,
-            type: 'kubernetes_input',
-          });
-        }
 
         this.emitEvent({
           sessionId,
@@ -7099,15 +6162,6 @@ export class ConsoleManager extends EventEmitter implements CommandQueueHost {
     };
 
     const sequence = keyMap[key.toLowerCase()] || key;
-
-    // Record key input to monitoring system
-    if (this.monitoringSystem.isSessionBeingMonitored(sessionId)) {
-      this.monitoringSystem.recordEvent(sessionId, 'input', {
-        type: 'key_input',
-        key: key.toLowerCase(),
-        sequence: sequence.replace(/\x1b/g, '\\x1b'), // Safe representation
-      });
-    }
 
     await this.sendInput(sessionId, sequence);
   }
@@ -7311,14 +6365,6 @@ export class ConsoleManager extends EventEmitter implements CommandQueueHost {
       // Send data to serial device
       await this.serialProtocol.sendData(sessionId, input);
 
-      // Record input to monitoring system
-      if (this.monitoringSystem.isSessionBeingMonitored(sessionId)) {
-        this.monitoringSystem.recordEvent(sessionId, 'input', {
-          size: input.length,
-          type: 'serial_input',
-        });
-      }
-
       // Emit input event
       this.emitEvent({
         sessionId,
@@ -7360,14 +6406,6 @@ export class ConsoleManager extends EventEmitter implements CommandQueueHost {
     try {
       // Send input to AWS SSM session
       await this.awsSSMProtocol.sendInput(session.awsSSMSessionId, input);
-
-      // Record input to monitoring system
-      if (this.monitoringSystem.isSessionBeingMonitored(sessionId)) {
-        this.monitoringSystem.recordEvent(sessionId, 'input', {
-          size: input.length,
-          type: 'aws_ssm_input',
-        });
-      }
 
       // Emit input event
       this.emitEvent({
@@ -7433,15 +6471,6 @@ export class ConsoleManager extends EventEmitter implements CommandQueueHost {
       winrmSession.lastActivity = new Date();
       winrmSession.performanceCounters.commandsExecuted++;
       this.winrmSessions.set(sessionId, winrmSession);
-
-      // Record input to monitoring system
-      if (this.monitoringSystem.isSessionBeingMonitored(sessionId)) {
-        this.monitoringSystem.recordEvent(sessionId, 'input', {
-          size: input.length,
-          type: 'winrm_input',
-          isPowerShell: isPowerShellCommand,
-        });
-      }
 
       // Emit input event
       this.emitEvent({
@@ -7592,11 +6621,6 @@ export class ConsoleManager extends EventEmitter implements CommandQueueHost {
     // Clear command queue for this session
     this.clearCommandQueue(sessionId);
 
-    // Ensure monitoring is stopped
-    if (this.monitoringSystem.isSessionBeingMonitored(sessionId)) {
-      this.monitoringSystem.stopSessionMonitoring(sessionId);
-    }
-
     // Cleanup health monitoring components
     if (this.selfHealingEnabled) {
       await this.unregisterSessionFromHealthMonitoring(
@@ -7661,12 +6685,13 @@ export class ConsoleManager extends EventEmitter implements CommandQueueHost {
     this.addToBuffer(sessionId, output);
   }
 
-  isSessionMonitored(sessionId: string): boolean {
-    return this.monitoringSystem.isSessionBeingMonitored(sessionId);
+  isSessionMonitored(_sessionId: string): boolean {
+    // MonitoringSystem removed — monitoring now handled by HealthOrchestrator
+    return false;
   }
 
-  recordMonitoringEvent(sessionId: string, type: string, data: unknown): void {
-    this.monitoringSystem.recordEvent(sessionId, type, data);
+  recordMonitoringEvent(_sessionId: string, _type: string, _data: unknown): void {
+    // MonitoringSystem removed — monitoring now handled by HealthOrchestrator
   }
 
   recordCommandMetrics(success: boolean, duration: number, command: string, sessionId: string): void {
@@ -7706,25 +6731,21 @@ export class ConsoleManager extends EventEmitter implements CommandQueueHost {
     };
   }
 
-  // Monitoring system access methods
-  getMonitoringSystem(): MonitoringSystem {
-    return this.monitoringSystem;
+  // Monitoring access methods — MonitoringSystem removed, return stubs
+  getSessionMetrics(_sessionId: string): null {
+    return null;
   }
 
-  getSessionMetrics(sessionId: string) {
-    return this.monitoringSystem.getSessionMetrics(sessionId);
+  getSystemMetrics(): null {
+    return null;
   }
 
-  getSystemMetrics() {
-    return this.monitoringSystem.getSystemMetrics();
+  getAlerts(): never[] {
+    return [];
   }
 
-  getAlerts() {
-    return this.monitoringSystem.getAlerts();
-  }
-
-  getDashboard() {
-    return this.monitoringSystem.getDashboard();
+  getDashboard(): null {
+    return null;
   }
 
   private startResourceMonitor() {
@@ -8837,8 +7858,6 @@ export class ConsoleManager extends EventEmitter implements CommandQueueHost {
     await this.sessionManager.shutdown();
     await this.sessionManager.destroy();
 
-    await this.monitoringSystem.destroy();
-
     // Clean up retry and error recovery systems
     this.retryManager.destroy();
     this.errorRecovery.destroy();
@@ -8851,7 +7870,7 @@ export class ConsoleManager extends EventEmitter implements CommandQueueHost {
 
     // Shutdown self-healing components
     if (this.selfHealingEnabled) {
-      await this.shutdownSelfHealingComponents();
+      await this.healthOrchestrator.stop();
     }
 
     this.removeAllListeners();
@@ -10263,15 +9282,6 @@ export class ConsoleManager extends EventEmitter implements CommandQueueHost {
         protocol: options.rdpOptions.protocol,
       });
 
-      // Start monitoring if enabled
-      if (options.monitoring) {
-        await this.monitoringSystem.startSessionMonitoring(sessionId, {
-          command: options.command,
-          args: options.args || [],
-          ...options.monitoring,
-        });
-      }
-
       this.logger.info(`RDP session ${sessionId} created successfully`);
       return sessionId;
     } catch (error) {
@@ -10357,15 +9367,6 @@ export class ConsoleManager extends EventEmitter implements CommandQueueHost {
         protocol: options.winrmOptions.protocol,
         authType: options.winrmOptions.authType,
       });
-
-      // Start monitoring if enabled
-      if (options.monitoring) {
-        await this.monitoringSystem.startSessionMonitoring(sessionId, {
-          command: options.command,
-          args: options.args || [],
-          ...options.monitoring,
-        });
-      }
 
       this.logger.info(`WinRM session ${sessionId} created successfully`);
       return sessionId;
@@ -10525,15 +9526,6 @@ export class ConsoleManager extends EventEmitter implements CommandQueueHost {
         securityType: options.vncOptions.authMethod,
         encoding: options.vncOptions.encoding,
       });
-
-      // Start monitoring if enabled
-      if (options.monitoring) {
-        await this.monitoringSystem.startSessionMonitoring(sessionId, {
-          command: options.command,
-          args: options.args || [],
-          ...options.monitoring,
-        });
-      }
 
       // Setup VNC event handlers
       this.setupVNCEventHandlers(sessionId, vncProtocol);
@@ -10961,13 +9953,6 @@ export class ConsoleManager extends EventEmitter implements CommandQueueHost {
         this.emit('output', output);
       }
 
-      // Record input to monitoring system
-      if (this.monitoringSystem.isSessionBeingMonitored(sessionId)) {
-        this.monitoringSystem.recordEvent(sessionId, 'input', {
-          size: input.length,
-          type: 'wsl_input',
-        });
-      }
     } catch (error) {
       this.logger.error(
         `Failed to send input to WSL session ${sessionId}:`,
@@ -11123,16 +10108,6 @@ export class ConsoleManager extends EventEmitter implements CommandQueueHost {
       webSocketSession.bytesTransferred += input.length;
       this.webSocketTerminalSessions.set(sessionId, webSocketSession);
 
-      // Record input to monitoring system
-      if (this.monitoringSystem.isSessionBeingMonitored(sessionId)) {
-        this.monitoringSystem.recordEvent(sessionId, 'input', {
-          size: input.length,
-          type: 'websocket_terminal_input',
-          terminal: webSocketSession.terminalType || 'xterm',
-          encoding: webSocketSession.encoding || 'utf-8',
-        });
-      }
-
       // Update session activity
       await this.sessionManager.updateSessionActivity(sessionId, {
         lastActivity: new Date(),
@@ -11223,15 +10198,6 @@ export class ConsoleManager extends EventEmitter implements CommandQueueHost {
         },
       });
 
-      // Start monitoring if enabled
-      if (options.monitoring) {
-        await this.monitoringSystem.startSessionMonitoring(sessionId, {
-          command: options.command,
-          args: options.args || [],
-          ...options.monitoring,
-        });
-      }
-
       this.logger.info(
         `WebSocket Terminal session ${sessionId} created successfully`
       );
@@ -11311,15 +10277,6 @@ export class ConsoleManager extends EventEmitter implements CommandQueueHost {
       // Start IPMI monitoring if enabled
       if (options.monitoring?.enableMetrics) {
         await this.startIPMIMonitoring(sessionId, options.ipmiOptions);
-      }
-
-      // Start monitoring if enabled
-      if (options.monitoring) {
-        await this.monitoringSystem.startSessionMonitoring(sessionId, {
-          command: options.command,
-          args: options.args || [],
-          ...options.monitoring,
-        });
       }
 
       this.logger.info(`IPMI session ${sessionId} created successfully`);
