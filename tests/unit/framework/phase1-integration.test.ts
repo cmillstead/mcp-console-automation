@@ -25,6 +25,8 @@ describe('Phase 1 Integration Tests', () => {
   });
 
   beforeEach(() => {
+    // Use fake timers to prevent real intervals from ConsoleManager constructor
+    jest.useFakeTimers();
     recorder = new TestRecorder(testDir);
     consoleManager = new ConsoleManager();
     replayEngine = new TestReplayEngine(consoleManager);
@@ -42,9 +44,14 @@ describe('Phase 1 Integration Tests', () => {
   });
 
   afterEach(async () => {
-    // Cleanup any active sessions
+    // Cleanup any active sessions and destroy to clear interval handles
     try {
       await consoleManager.stopAllSessions();
+    } catch (e) {
+      // Ignore cleanup errors
+    }
+    try {
+      await consoleManager.destroy();
     } catch (e) {
       // Ignore cleanup errors
     }
@@ -56,6 +63,9 @@ describe('Phase 1 Integration Tests', () => {
         // Ignore
       }
     }
+
+    jest.clearAllTimers();
+    jest.useRealTimers();
   });
 
   describe('End-to-End Workflow', () => {
@@ -178,10 +188,10 @@ describe('Phase 1 Integration Tests', () => {
       recorder.startRecording({ name: 'timing-test' });
 
       recorder.recordSendInput('step1');
-      await new Promise((resolve) => setTimeout(resolve, 50));
+      jest.advanceTimersByTime(50);
 
       recorder.recordSendInput('step2');
-      await new Promise((resolve) => setTimeout(resolve, 50));
+      jest.advanceTimersByTime(50);
 
       recorder.recordSendInput('step3');
 

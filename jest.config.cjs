@@ -56,6 +56,8 @@ module.exports = {
   testTimeout: 45000,
   maxWorkers: '75%',
   detectOpenHandles: true,
+  // forceExit is needed because Logger accesses process.stdin.isTTY which creates
+  // a PIPEWRAP handle that prevents Jest from exiting cleanly (Node.js limitation)
   forceExit: true,
   clearMocks: true,
   restoreMocks: true,
