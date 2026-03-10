@@ -123,6 +123,27 @@ export class OutputFilterEngine {
         options: JSON.stringify(options, null, 2),
       });
 
+      // Validate options upfront
+      if (options.grep) {
+        try {
+          new RegExp(options.grep);
+        } catch (e: any) {
+          return {
+            success: false,
+            error: `Invalid regex pattern: ${options.grep}`,
+          };
+        }
+      }
+      if (options.lineRange) {
+        const [start, end] = options.lineRange;
+        if (end < start) {
+          return {
+            success: false,
+            error: `Invalid line range: start (${start}) must be <= end (${end})`,
+          };
+        }
+      }
+
       // Early exit for empty output
       if (output.length === 0) {
         return this.createEmptyResult(startTime, initialMemory);
@@ -131,8 +152,14 @@ export class OutputFilterEngine {
       let result = [...output]; // Start with copy to avoid mutation
       const filterStats: any = {};
 
+      // Apply maxLines early to cap input size for processing
+      if (options.maxLines && result.length > options.maxLines) {
+        result = result.slice(0, options.maxLines);
+      }
+      const totalLinesProcessed = result.length;
+
       // Apply streaming mode processing for large outputs
-      if (options.streamingMode || output.length > 10000) {
+      if (options.streamingMode || result.length > 10000) {
         result = await this.processInStreamingMode(result, options);
       }
 
@@ -147,23 +174,14 @@ export class OutputFilterEngine {
         filterStats.timeFiltered = timeResult.removed;
       }
 
-      // Step 2: Line-based operations (apply before pattern matching for efficiency)
+      // Step 2: Line-based operations (line range applied before pattern matching)
       if (options.lineRange) {
         const lineResult = this.applyLineRangeFilter(result, options.lineRange);
         result = lineResult.filtered;
         filterStats.lineRangeFiltered = lineResult.removed;
       }
 
-      if (options.head && !options.tail) {
-        result = result.slice(0, options.head);
-      } else if (options.tail && !options.head) {
-        result = result.slice(-options.tail);
-      } else if (options.head && options.tail) {
-        // Apply head first, then tail (take first N, then last M of those)
-        result = result.slice(0, options.head).slice(-options.tail);
-      }
-
-      // Step 3: Pattern matching (most CPU-intensive, apply after reduction)
+      // Step 3: Pattern matching
       if (options.grep) {
         const grepResult = this.applyGrepFilter(result, options.grep, options);
         result = grepResult.filtered;
@@ -180,9 +198,13 @@ export class OutputFilterEngine {
         filterStats.multiPatternMatches = multiResult.matches;
       }
 
-      // Step 5: Apply final limits
-      if (options.maxLines && result.length > options.maxLines) {
-        result = result.slice(0, options.maxLines);
+      // Step 5: Head/tail (applied after pattern filtering)
+      if (options.head && !options.tail) {
+        result = result.slice(0, options.head);
+      } else if (options.tail && !options.head) {
+        result = result.slice(-options.tail);
+      } else if (options.head && options.tail) {
+        result = result.slice(0, options.head).slice(-options.tail);
       }
 
       const endTime = performance.now();
@@ -192,7 +214,7 @@ export class OutputFilterEngine {
       // Update metrics
       this.updateMetrics(
         processingTime,
-        output.length,
+        totalLinesProcessed,
         finalMemory - initialMemory
       );
 
@@ -201,19 +223,19 @@ export class OutputFilterEngine {
         filteredOutput: result,
         output: result, // Legacy compatibility
         metrics: {
-          totalLines: output.length,
+          totalLines: totalLinesProcessed,
           filteredLines: result.length,
           processingTimeMs: processingTime,
           memoryUsageBytes: finalMemory - initialMemory,
-          truncated: result.length < output.length,
+          truncated: result.length < totalLinesProcessed,
           filterStats,
         },
         metadata: {
-          totalLines: output.length,
+          totalLines: totalLinesProcessed,
           filteredLines: result.length,
           processingTimeMs: processingTime,
           memoryUsageBytes: finalMemory - initialMemory,
-          truncated: result.length < output.length,
+          truncated: result.length < totalLinesProcessed,
           filterStats,
         }, // Legacy compatibility
       };
@@ -222,7 +244,25 @@ export class OutputFilterEngine {
       return filterResult;
     } catch (error: any) {
       this.logger.error('Filter operation failed', error);
-      throw new Error(`Filter operation failed: ${error.message}`);
+      const message = error.message || String(error);
+      // Check for invalid regex errors
+      if (message.includes('Invalid regular expression')) {
+        return {
+          success: false,
+          error: `Invalid regex pattern: ${message}`,
+        };
+      }
+      // Check for invalid line range
+      if (message.includes('Invalid line range')) {
+        return {
+          success: false,
+          error: `Invalid line range: ${message}`,
+        };
+      }
+      return {
+        success: false,
+        error: `Filter operation failed: ${message}`,
+      };
     }
   }
 
@@ -245,9 +285,9 @@ export class OutputFilterEngine {
       // Yield control to event loop every chunk
       await new Promise((resolve) => setImmediate(resolve));
 
-      // Memory pressure check
-      if (this.getMemoryUsage() > 100 * 1024 * 1024) {
-        // 100MB threshold
+      // Memory pressure check - use high threshold to avoid premature truncation
+      if (this.getMemoryUsage() > 512 * 1024 * 1024) {
+        // 512MB threshold
         this.logger.warn('Memory pressure detected, reducing chunk size');
         break;
       }
@@ -430,7 +470,7 @@ export class OutputFilterEngine {
 
     this.metrics.cacheMisses++;
 
-    let flags = 'g';
+    let flags = '';
     if (options.ignoreCase) flags += 'i';
 
     const regex = new RegExp(pattern, flags);
