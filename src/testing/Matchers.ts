@@ -240,10 +240,10 @@ export class Matchers {
     }
 
     const defaultErrorPatterns = [
-      /error:/i,
-      /exception:/i,
-      /fatal:/i,
-      /failed:/i,
+      /error/i,
+      /exception/i,
+      /fatal/i,
+      /failed/i,
       /cannot/i,
       /unable to/i,
       /permission denied/i,

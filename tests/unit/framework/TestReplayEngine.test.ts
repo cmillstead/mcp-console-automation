@@ -8,7 +8,7 @@ import { StepResult, TestRecording } from '../../../src/types/test-framework.js'
 import { ConsoleManager } from '../../../src/core/ConsoleManager.js';
 
 // Mock ConsoleManager
-jest.mock('../core/ConsoleManager');
+jest.mock('../../../src/core/ConsoleManager.js');
 
 describe('TestReplayEngine', () => {
   let engine: TestReplayEngine;
@@ -20,10 +20,7 @@ describe('TestReplayEngine', () => {
     engine = new TestReplayEngine(mockConsoleManager);
 
     // Setup default mocks
-    mockConsoleManager.createSession = jest.fn().mockResolvedValue({
-      sessionId: 'test-session-123',
-      success: true,
-    });
+    mockConsoleManager.createSession = jest.fn().mockResolvedValue('test-session-123');
 
     mockConsoleManager.sendInput = jest.fn().mockResolvedValue({
       success: true,
@@ -107,11 +104,11 @@ describe('TestReplayEngine', () => {
       const result = await engine.replay(recording);
 
       expect(result.status).toBe('success');
-      expect(mockConsoleManager.waitForOutput).toHaveBeenCalledWith({
-        sessionId: 'test-session-123',
-        pattern: 'prompt>',
-        timeout: 5000,
-      });
+      expect(mockConsoleManager.waitForOutput).toHaveBeenCalledWith(
+        'test-session-123',
+        'prompt>',
+        { timeout: 5000 },
+      );
     });
 
     it('should skip assertion and snapshot steps (Phase 2)', async () => {
@@ -179,7 +176,7 @@ describe('TestReplayEngine', () => {
     it('should stop on error if stopOnError is true', async () => {
       mockConsoleManager.createSession = jest
         .fn()
-        .mockResolvedValueOnce({ sessionId: 'session1' })
+        .mockResolvedValueOnce('session1')
         .mockRejectedValue(new Error('Failed'));
 
       const recording: TestRecording = {
@@ -234,11 +231,13 @@ describe('TestReplayEngine', () => {
         duration: 100,
         steps: [
           { type: 'create_session', timestamp: 0, data: {}, sessionId: 's1' },
+          { type: 'send_input', timestamp: 10, data: { input: 'test' }, sessionId: 's1' },
         ],
         metadata: {},
       };
 
-      // Mock a slow operation
+      // Mock a slow operation — the first step takes longer than the timeout,
+      // so the timeout check before the second step will trigger
       mockConsoleManager.createSession = jest.fn(
         (options: any) =>
           new Promise((resolve) => setTimeout(() => resolve('s1'), 200))

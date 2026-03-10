@@ -15,6 +15,37 @@ import {
   ParallelExecutionConfig,
 } from '../../../src/types/test-framework.js';
 
+// Mock WorkerPool to avoid spawning real worker threads in tests
+jest.mock('../../../src/testing/WorkerPool.js', () => {
+  class MockWorkerPool {
+    initialize = jest.fn().mockResolvedValue(undefined);
+    shutdown = jest.fn().mockResolvedValue(undefined);
+    executeTask = jest.fn().mockImplementation((task: any) => {
+      const startTime = Date.now();
+      return Promise.resolve({
+        taskId: task.id,
+        result: {
+          test: task.test,
+          status: 'pass',
+          duration: 10,
+          startTime,
+          endTime: startTime + 10,
+          assertions: [],
+        },
+      });
+    });
+    getStatistics = jest.fn().mockReturnValue({
+      totalWorkers: 4,
+      busyWorkers: 0,
+      idleWorkers: 4,
+      queuedTasks: 0,
+      totalTasksCompleted: 0,
+      averageTasksPerWorker: 0,
+    });
+  }
+  return { WorkerPool: MockWorkerPool };
+});
+
 describe('Phase 4 Integration', () => {
   describe('Parallel Execution + Retry Integration', () => {
     it('should execute tests in parallel and retry failures', async () => {

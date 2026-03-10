@@ -232,14 +232,23 @@ describe('RetryManager', () => {
         },
       ];
 
-      const executor = async (t: TestDefinition): Promise<TestResult> => ({
-        test: t,
-        status: 'pass',
-        duration: 10,
-        startTime: Date.now(),
-        endTime: Date.now() + 10,
-        assertions: [],
-      });
+      // Track call counts per test so each test fails once then succeeds
+      const callCounts = new Map<string, number>();
+      const executor = async (t: TestDefinition): Promise<TestResult> => {
+        const count = (callCounts.get(t.name) || 0) + 1;
+        callCounts.set(t.name, count);
+        const passed = count > 1; // Fail first attempt, pass on retry
+
+        return {
+          test: t,
+          status: passed ? 'pass' : 'fail',
+          duration: 10,
+          startTime: Date.now(),
+          endTime: Date.now() + 10,
+          assertions: [],
+          error: passed ? undefined : new Error('Simulated failure'),
+        };
+      };
 
       const results = await retryManager.retryFailedTests(
         failedTests,
