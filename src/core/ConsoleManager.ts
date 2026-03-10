@@ -54,7 +54,6 @@ import {
   PaginationResponse,
   PaginationOptions,
 } from './OutputPaginationManager.js';
-import { MonitoringSystem } from '../monitoring/MonitoringSystem.js';
 import { PromptDetector, PromptDetectionResult } from './PromptDetector.js';
 import { ConnectionPool } from './ConnectionPool.js';
 import { SessionManager } from './SessionManager.js';
@@ -123,8 +122,6 @@ export class ConsoleManager
   private maxBufferSize: number = 10000;
   private maxSessions: number = mcpConfig.maxSessions;
   private resourceMonitor: NodeJS.Timeout | null = null;
-  private monitoringSystem: MonitoringSystem;
-  private monitoringSystems: Map<string, MonitoringSystem>;
   private retryAttempts: Map<string, number>;
   private sessionHealthCheckIntervals: Map<string, NodeJS.Timeout>;
   private configManager: ConfigManager;
@@ -299,7 +296,6 @@ export class ConsoleManager
     this.streamManagers = new Map();
     this.rdpSessions = new Map();
     this.sessionHealthCheckIntervals = new Map();
-    this.monitoringSystems = new Map();
 
     // Legacy session tracking (to be fully migrated)
     this.winrmProtocols = new Map();
@@ -326,7 +322,6 @@ export class ConsoleManager
     this.promptDetector = new PromptDetector();
     this.logger = new Logger('ConsoleManager');
     this.queue = new PQueue({ concurrency: 10 });
-    this.monitoringSystem = new MonitoringSystem();
     this.retryAttempts = new Map();
     this.configManager = ConfigManager.getInstance();
 
@@ -3177,15 +3172,6 @@ export class ConsoleManager
         );
       });
 
-      // Start monitoring if enabled
-      if (options.monitoring) {
-        await this.monitoringSystem.startSessionMonitoring(sessionId, {
-          command: options.command,
-          args: options.args || [],
-          ...options.monitoring,
-        });
-      }
-
       this.emitEvent({
         sessionId,
         type: 'started',
@@ -3349,15 +3335,6 @@ export class ConsoleManager
         sessionType: sessionType,
       });
 
-      // Start monitoring if enabled
-      if (options.monitoring) {
-        await this.monitoringSystem.startSessionMonitoring(sessionId, {
-          command: options.command,
-          args: options.args || [],
-          ...options.monitoring,
-        });
-      }
-
       this.emitEvent({
         sessionId,
         type: 'started',
@@ -3470,15 +3447,6 @@ export class ConsoleManager
         sessionType:
           options.consoleType === 'docker-exec' ? 'docker-exec' : 'docker',
       });
-
-      // Start monitoring if enabled
-      if (options.monitoring) {
-        await this.monitoringSystem.startSessionMonitoring(sessionId, {
-          command: options.command,
-          args: options.args || [],
-          ...options.monitoring,
-        });
-      }
 
       this.emitEvent({
         sessionId,
@@ -3925,38 +3893,6 @@ export class ConsoleManager
       });
       this.streamManagers.set(sessionId, streamManager);
 
-      // Set up monitoring
-      if (options.monitoring) {
-        const monitoringSystem = new MonitoringSystem({
-          anomalyDetection: {
-            enabled: options.monitoring.enableAnomalyDetection || false,
-            windowSize: 100,
-            confidenceLevel: 0.95,
-          },
-          alerting: {
-            enabled: options.monitoring.enableAuditing || false,
-            channels: [
-              {
-                type: 'console',
-                config: {},
-              },
-            ],
-          },
-          auditing: {
-            enabled: false,
-            logDirectory: './logs',
-            encryption: false,
-            retention: 30,
-          },
-          performance: {
-            enabled: options.monitoring.enableProfiling || false,
-            samplingInterval: 1000,
-            profileDuration: 60000,
-          },
-        });
-        this.monitoringSystems.set(sessionId, monitoringSystem);
-      }
-
       // Initialize error detection for serial output
       if (options.detectErrors !== false) {
         const defaultPatterns = this.getDefaultSerialErrorPatterns();
@@ -4159,7 +4095,6 @@ export class ConsoleManager
       this.streamManagers.delete(sessionId);
       // Cleanup pagination manager for this session
       this.paginationManager.removeSession(sessionId);
-      this.monitoringSystems.delete(sessionId);
 
       // Error patterns are global and don't need session-specific cleanup
     } catch (error) {
@@ -4816,16 +4751,6 @@ export class ConsoleManager
 
       this.setupProcessHandlers(sessionId, childProcess, options);
 
-      // Start monitoring if enabled
-      if (options.monitoring) {
-        await this.monitoringSystem.startSessionMonitoring(sessionId, {
-          command: options.command,
-          args: options.args || [],
-          pid: childProcess.pid!,
-          ...options.monitoring,
-        });
-      }
-
       // Update session manager
       await this.sessionManager.updateSessionStatus(sessionId, 'running', {
         pid: childProcess.pid,
@@ -4938,15 +4863,6 @@ export class ConsoleManager
         data: output,
       });
 
-      // Record output to monitoring system
-      if (this.monitoringSystem.isSessionBeingMonitored(sessionId)) {
-        this.monitoringSystem.recordEvent(sessionId, 'output', {
-          type: 'stdout',
-          size: text.length,
-          lineCount: text.split('\n').length - 1,
-        });
-      }
-
       // Update session activity
       this.sessionManager.updateSessionActivity(sessionId, {
         lastOutput: new Date(),
@@ -4977,14 +4893,6 @@ export class ConsoleManager
               data: { errors, output: output.data },
             });
 
-            // Record error to monitoring system
-            if (this.monitoringSystem.isSessionBeingMonitored(sessionId)) {
-              this.monitoringSystem.recordEvent(sessionId, 'error', {
-                errorCount: errors.length,
-                errorTypes: errors.map((e) => e.pattern.type),
-                output: output.data,
-              });
-            }
           }
         });
       }
@@ -5014,15 +4922,6 @@ export class ConsoleManager
         data: output,
       });
 
-      // Record stderr output to monitoring system
-      if (this.monitoringSystem.isSessionBeingMonitored(sessionId)) {
-        this.monitoringSystem.recordEvent(sessionId, 'output', {
-          type: 'stderr',
-          size: text.length,
-          lineCount: text.split('\n').length - 1,
-        });
-      }
-
       // Update session activity
       this.sessionManager.updateSessionActivity(sessionId, {
         lastError: new Date(),
@@ -5050,15 +4949,6 @@ export class ConsoleManager
             data: { errors, output: output.data, isStderr: true },
           });
 
-          // Record stderr error to monitoring system
-          if (this.monitoringSystem.isSessionBeingMonitored(sessionId)) {
-            this.monitoringSystem.recordEvent(sessionId, 'error', {
-              errorCount: errors.length,
-              errorTypes: errors.map((e) => e.pattern.type),
-              output: output.data,
-              isStderr: true,
-            });
-          }
         }
       });
     });
@@ -5077,11 +4967,6 @@ export class ConsoleManager
 
       // Update session manager
       this.sessionManager.updateSessionStatus(sessionId, 'stopped');
-
-      // Stop monitoring if active
-      if (this.monitoringSystem.isSessionBeingMonitored(sessionId)) {
-        this.monitoringSystem.stopSessionMonitoring(sessionId);
-      }
 
       this.emitEvent({
         sessionId,
@@ -5114,16 +4999,6 @@ export class ConsoleManager
       this.sessionManager.updateSessionStatus(sessionId, 'failed', {
         error: error.message,
       });
-
-      // Record process error to monitoring system
-      if (this.monitoringSystem.isSessionBeingMonitored(sessionId)) {
-        this.monitoringSystem.recordEvent(sessionId, 'error', {
-          type: 'ssh_stream_error',
-          error: error.message,
-          stack: error.stack,
-        });
-        this.monitoringSystem.stopSessionMonitoring(sessionId);
-      }
 
       this.emitEvent({
         sessionId,
@@ -5290,15 +5165,6 @@ export class ConsoleManager
           data: output,
         });
 
-        // Record output to monitoring system
-        if (this.monitoringSystem.isSessionBeingMonitored(sessionId)) {
-          this.monitoringSystem.recordEvent(sessionId, 'output', {
-            type: 'stdout',
-            size: text.length,
-            lineCount: text.split('\n').length - 1,
-          });
-        }
-
         if (options.detectErrors !== false) {
           this.queue.add(async () => {
             // Convert ErrorPattern[] to ExtendedErrorPattern[] if needed
@@ -5323,14 +5189,6 @@ export class ConsoleManager
                 data: { errors, output: output.data },
               });
 
-              // Record error to monitoring system
-              if (this.monitoringSystem.isSessionBeingMonitored(sessionId)) {
-                this.monitoringSystem.recordEvent(sessionId, 'error', {
-                  errorCount: errors.length,
-                  errorTypes: errors.map((e) => e.pattern.type),
-                  output: output.data,
-                });
-              }
             }
           });
         }
@@ -5369,15 +5227,6 @@ export class ConsoleManager
           data: output,
         });
 
-        // Record stderr output to monitoring system
-        if (this.monitoringSystem.isSessionBeingMonitored(sessionId)) {
-          this.monitoringSystem.recordEvent(sessionId, 'output', {
-            type: 'stderr',
-            size: text.length,
-            lineCount: text.split('\n').length - 1,
-          });
-        }
-
         // Always check stderr for errors
         this.queue.add(async () => {
           // Convert ErrorPattern[] to ExtendedErrorPattern[] if needed
@@ -5402,15 +5251,6 @@ export class ConsoleManager
               data: { errors, output: output.data, isStderr: true },
             });
 
-            // Record stderr error to monitoring system
-            if (this.monitoringSystem.isSessionBeingMonitored(sessionId)) {
-              this.monitoringSystem.recordEvent(sessionId, 'error', {
-                errorCount: errors.length,
-                errorTypes: errors.map((e) => e.pattern.type),
-                output: output.data,
-                isStderr: true,
-              });
-            }
           }
         });
       });
@@ -5429,11 +5269,6 @@ export class ConsoleManager
         streamManager.end();
       }
 
-      // Stop monitoring if active
-      if (this.monitoringSystem.isSessionBeingMonitored(sessionId)) {
-        this.monitoringSystem.stopSessionMonitoring(sessionId);
-      }
-
       this.emitEvent({
         sessionId,
         type: 'stopped',
@@ -5449,16 +5284,6 @@ export class ConsoleManager
       if (session) {
         session.status = 'crashed';
         this.sessions.set(sessionId, session);
-      }
-
-      // Record process error to monitoring system
-      if (this.monitoringSystem.isSessionBeingMonitored(sessionId)) {
-        this.monitoringSystem.recordEvent(sessionId, 'error', {
-          type: 'process_error',
-          error: error.message,
-          stack: error.stack,
-        });
-        this.monitoringSystem.stopSessionMonitoring(sessionId);
       }
 
       // Try to recover from the error
@@ -5685,16 +5510,6 @@ export class ConsoleManager
 
       // Configure prompt detection for legacy SSH session
       this.configurePromptDetection(sessionId, options);
-
-      // Start monitoring if enabled
-      if (options.monitoring) {
-        await this.monitoringSystem.startSessionMonitoring(sessionId, {
-          command: options.command!,
-          args: options.args || [],
-          pid: 0, // SSH connections don't have local PIDs
-          ...options.monitoring,
-        });
-      }
 
       this.emitEvent({
         sessionId,
@@ -5983,15 +5798,6 @@ export class ConsoleManager
         data: output,
       });
 
-      // Record output to monitoring system
-      if (this.monitoringSystem.isSessionBeingMonitored(sessionId)) {
-        this.monitoringSystem.recordEvent(sessionId, 'output', {
-          type: 'stdout',
-          size: text.length,
-          lineCount: text.split('\n').length - 1,
-        });
-      }
-
       if (options.detectErrors !== false) {
         this.queue.add(async () => {
           // Convert ErrorPattern[] to ExtendedErrorPattern[] if needed
@@ -6016,14 +5822,6 @@ export class ConsoleManager
               data: { errors, output: output.data },
             });
 
-            // Record error to monitoring system
-            if (this.monitoringSystem.isSessionBeingMonitored(sessionId)) {
-              this.monitoringSystem.recordEvent(sessionId, 'error', {
-                errorCount: errors.length,
-                errorTypes: errors.map((e) => e.pattern.type),
-                output: output.data,
-              });
-            }
           }
         });
       }
@@ -6052,15 +5850,6 @@ export class ConsoleManager
         data: output,
       });
 
-      // Record stderr output to monitoring system
-      if (this.monitoringSystem.isSessionBeingMonitored(sessionId)) {
-        this.monitoringSystem.recordEvent(sessionId, 'output', {
-          type: 'stderr',
-          size: text.length,
-          lineCount: text.split('\n').length - 1,
-        });
-      }
-
       // Always check stderr for errors
       this.queue.add(async () => {
         // Convert ErrorPattern[] to ExtendedErrorPattern[] if needed
@@ -6082,15 +5871,6 @@ export class ConsoleManager
             data: { errors, output: output.data, isStderr: true },
           });
 
-          // Record stderr error to monitoring system
-          if (this.monitoringSystem.isSessionBeingMonitored(sessionId)) {
-            this.monitoringSystem.recordEvent(sessionId, 'error', {
-              errorCount: errors.length,
-              errorTypes: errors.map((e) => e.pattern.type),
-              output: output.data,
-              isStderr: true,
-            });
-          }
         }
       });
     });
@@ -6105,11 +5885,6 @@ export class ConsoleManager
 
       if (streamManager) {
         streamManager.end();
-      }
-
-      // Stop monitoring if active
-      if (this.monitoringSystem.isSessionBeingMonitored(sessionId)) {
-        this.monitoringSystem.stopSessionMonitoring(sessionId);
       }
 
       this.emitEvent({
@@ -6127,16 +5902,6 @@ export class ConsoleManager
       if (session) {
         session.status = 'crashed';
         this.sessions.set(sessionId, session);
-      }
-
-      // Record SSH error to monitoring system
-      if (this.monitoringSystem.isSessionBeingMonitored(sessionId)) {
-        this.monitoringSystem.recordEvent(sessionId, 'error', {
-          type: 'ssh_channel_error',
-          error: error.message,
-          stack: error.stack,
-        });
-        this.monitoringSystem.stopSessionMonitoring(sessionId);
       }
 
       this.emitEvent({
@@ -6325,14 +6090,6 @@ export class ConsoleManager
         if (error) {
           reject(error);
         } else {
-          // Record input to monitoring system
-          if (this.monitoringSystem.isSessionBeingMonitored(sessionId)) {
-            this.monitoringSystem.recordEvent(sessionId, 'input', {
-              size: input.length,
-              type: 'text_input',
-            });
-          }
-
           this.emitEvent({
             sessionId,
             type: 'input',
@@ -6365,14 +6122,6 @@ export class ConsoleManager
       // Only exec sessions support input
       if (session.kubernetesState.sessionType === 'exec') {
         await this.kubernetesProtocol.sendInput(sessionId, input);
-
-        // Record input to monitoring system
-        if (this.monitoringSystem.isSessionBeingMonitored(sessionId)) {
-          this.monitoringSystem.recordEvent(sessionId, 'input', {
-            size: input.length,
-            type: 'kubernetes_input',
-          });
-        }
 
         this.emitEvent({
           sessionId,
@@ -6413,15 +6162,6 @@ export class ConsoleManager
     };
 
     const sequence = keyMap[key.toLowerCase()] || key;
-
-    // Record key input to monitoring system
-    if (this.monitoringSystem.isSessionBeingMonitored(sessionId)) {
-      this.monitoringSystem.recordEvent(sessionId, 'input', {
-        type: 'key_input',
-        key: key.toLowerCase(),
-        sequence: sequence.replace(/\x1b/g, '\\x1b'), // Safe representation
-      });
-    }
 
     await this.sendInput(sessionId, sequence);
   }
@@ -6625,14 +6365,6 @@ export class ConsoleManager
       // Send data to serial device
       await this.serialProtocol.sendData(sessionId, input);
 
-      // Record input to monitoring system
-      if (this.monitoringSystem.isSessionBeingMonitored(sessionId)) {
-        this.monitoringSystem.recordEvent(sessionId, 'input', {
-          size: input.length,
-          type: 'serial_input',
-        });
-      }
-
       // Emit input event
       this.emitEvent({
         sessionId,
@@ -6674,14 +6406,6 @@ export class ConsoleManager
     try {
       // Send input to AWS SSM session
       await this.awsSSMProtocol.sendInput(session.awsSSMSessionId, input);
-
-      // Record input to monitoring system
-      if (this.monitoringSystem.isSessionBeingMonitored(sessionId)) {
-        this.monitoringSystem.recordEvent(sessionId, 'input', {
-          size: input.length,
-          type: 'aws_ssm_input',
-        });
-      }
 
       // Emit input event
       this.emitEvent({
@@ -6747,15 +6471,6 @@ export class ConsoleManager
       winrmSession.lastActivity = new Date();
       winrmSession.performanceCounters.commandsExecuted++;
       this.winrmSessions.set(sessionId, winrmSession);
-
-      // Record input to monitoring system
-      if (this.monitoringSystem.isSessionBeingMonitored(sessionId)) {
-        this.monitoringSystem.recordEvent(sessionId, 'input', {
-          size: input.length,
-          type: 'winrm_input',
-          isPowerShell: isPowerShellCommand,
-        });
-      }
 
       // Emit input event
       this.emitEvent({
@@ -6906,11 +6621,6 @@ export class ConsoleManager
     // Clear command queue for this session
     this.clearCommandQueue(sessionId);
 
-    // Ensure monitoring is stopped
-    if (this.monitoringSystem.isSessionBeingMonitored(sessionId)) {
-      this.monitoringSystem.stopSessionMonitoring(sessionId);
-    }
-
     // Cleanup health monitoring components
     if (this.selfHealingEnabled) {
       await this.unregisterSessionFromHealthMonitoring(
@@ -6975,12 +6685,13 @@ export class ConsoleManager
     this.addToBuffer(sessionId, output);
   }
 
-  isSessionMonitored(sessionId: string): boolean {
-    return this.monitoringSystem.isSessionBeingMonitored(sessionId);
+  isSessionMonitored(_sessionId: string): boolean {
+    // MonitoringSystem removed — monitoring now handled by HealthOrchestrator
+    return false;
   }
 
-  recordMonitoringEvent(sessionId: string, type: string, data: unknown): void {
-    this.monitoringSystem.recordEvent(sessionId, type, data);
+  recordMonitoringEvent(_sessionId: string, _type: string, _data: unknown): void {
+    // MonitoringSystem removed — monitoring now handled by HealthOrchestrator
   }
 
   recordCommandMetrics(success: boolean, duration: number, command: string, sessionId: string): void {
@@ -7020,25 +6731,21 @@ export class ConsoleManager
     };
   }
 
-  // Monitoring system access methods
-  getMonitoringSystem(): MonitoringSystem {
-    return this.monitoringSystem;
+  // Monitoring access methods — MonitoringSystem removed, return stubs
+  getSessionMetrics(_sessionId: string): null {
+    return null;
   }
 
-  getSessionMetrics(sessionId: string) {
-    return this.monitoringSystem.getSessionMetrics(sessionId);
+  getSystemMetrics(): null {
+    return null;
   }
 
-  getSystemMetrics() {
-    return this.monitoringSystem.getSystemMetrics();
+  getAlerts(): never[] {
+    return [];
   }
 
-  getAlerts() {
-    return this.monitoringSystem.getAlerts();
-  }
-
-  getDashboard() {
-    return this.monitoringSystem.getDashboard();
+  getDashboard(): null {
+    return null;
   }
 
   private startResourceMonitor() {
@@ -8150,8 +7857,6 @@ export class ConsoleManager
     await this.connectionPool.shutdown();
     await this.sessionManager.shutdown();
     await this.sessionManager.destroy();
-
-    await this.monitoringSystem.destroy();
 
     // Clean up retry and error recovery systems
     this.retryManager.destroy();
@@ -9577,15 +9282,6 @@ export class ConsoleManager
         protocol: options.rdpOptions.protocol,
       });
 
-      // Start monitoring if enabled
-      if (options.monitoring) {
-        await this.monitoringSystem.startSessionMonitoring(sessionId, {
-          command: options.command,
-          args: options.args || [],
-          ...options.monitoring,
-        });
-      }
-
       this.logger.info(`RDP session ${sessionId} created successfully`);
       return sessionId;
     } catch (error) {
@@ -9671,15 +9367,6 @@ export class ConsoleManager
         protocol: options.winrmOptions.protocol,
         authType: options.winrmOptions.authType,
       });
-
-      // Start monitoring if enabled
-      if (options.monitoring) {
-        await this.monitoringSystem.startSessionMonitoring(sessionId, {
-          command: options.command,
-          args: options.args || [],
-          ...options.monitoring,
-        });
-      }
 
       this.logger.info(`WinRM session ${sessionId} created successfully`);
       return sessionId;
@@ -9839,15 +9526,6 @@ export class ConsoleManager
         securityType: options.vncOptions.authMethod,
         encoding: options.vncOptions.encoding,
       });
-
-      // Start monitoring if enabled
-      if (options.monitoring) {
-        await this.monitoringSystem.startSessionMonitoring(sessionId, {
-          command: options.command,
-          args: options.args || [],
-          ...options.monitoring,
-        });
-      }
 
       // Setup VNC event handlers
       this.setupVNCEventHandlers(sessionId, vncProtocol);
@@ -10275,13 +9953,6 @@ export class ConsoleManager
         this.emit('output', output);
       }
 
-      // Record input to monitoring system
-      if (this.monitoringSystem.isSessionBeingMonitored(sessionId)) {
-        this.monitoringSystem.recordEvent(sessionId, 'input', {
-          size: input.length,
-          type: 'wsl_input',
-        });
-      }
     } catch (error) {
       this.logger.error(
         `Failed to send input to WSL session ${sessionId}:`,
@@ -10437,16 +10108,6 @@ export class ConsoleManager
       webSocketSession.bytesTransferred += input.length;
       this.webSocketTerminalSessions.set(sessionId, webSocketSession);
 
-      // Record input to monitoring system
-      if (this.monitoringSystem.isSessionBeingMonitored(sessionId)) {
-        this.monitoringSystem.recordEvent(sessionId, 'input', {
-          size: input.length,
-          type: 'websocket_terminal_input',
-          terminal: webSocketSession.terminalType || 'xterm',
-          encoding: webSocketSession.encoding || 'utf-8',
-        });
-      }
-
       // Update session activity
       await this.sessionManager.updateSessionActivity(sessionId, {
         lastActivity: new Date(),
@@ -10537,15 +10198,6 @@ export class ConsoleManager
         },
       });
 
-      // Start monitoring if enabled
-      if (options.monitoring) {
-        await this.monitoringSystem.startSessionMonitoring(sessionId, {
-          command: options.command,
-          args: options.args || [],
-          ...options.monitoring,
-        });
-      }
-
       this.logger.info(
         `WebSocket Terminal session ${sessionId} created successfully`
       );
@@ -10625,15 +10277,6 @@ export class ConsoleManager
       // Start IPMI monitoring if enabled
       if (options.monitoring?.enableMetrics) {
         await this.startIPMIMonitoring(sessionId, options.ipmiOptions);
-      }
-
-      // Start monitoring if enabled
-      if (options.monitoring) {
-        await this.monitoringSystem.startSessionMonitoring(sessionId, {
-          command: options.command,
-          args: options.args || [],
-          ...options.monitoring,
-        });
       }
 
       this.logger.info(`IPMI session ${sessionId} created successfully`);

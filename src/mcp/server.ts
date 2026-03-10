@@ -2353,9 +2353,9 @@ export class ConsoleAutomationServer {
     };
   }
 
-  // Monitoring tool handlers
+  // Monitoring tool handlers — MonitoringSystem removed, stubs remain for API compat
   private async handleGetSystemMetrics() {
-    const metrics = await this.consoleManager.getSystemMetrics();
+    const metrics = this.consoleManager.getSystemMetrics();
     return {
       content: [
         {
@@ -2367,7 +2367,7 @@ export class ConsoleAutomationServer {
   }
 
   private async handleGetSessionMetrics(args: { sessionId: string }) {
-    const metrics = await this.consoleManager.getSessionMetrics(args.sessionId);
+    const metrics = this.consoleManager.getSessionMetrics(args.sessionId);
     return {
       content: [
         {
@@ -2379,7 +2379,7 @@ export class ConsoleAutomationServer {
   }
 
   private async handleGetAlerts() {
-    const alerts = await this.consoleManager.getAlerts();
+    const alerts = this.consoleManager.getAlerts();
     return {
       content: [
         {
@@ -2391,7 +2391,7 @@ export class ConsoleAutomationServer {
   }
 
   private async handleGetMonitoringDashboard() {
-    const dashboard = await this.consoleManager.getDashboard();
+    const dashboard = this.consoleManager.getDashboard();
     return {
       content: [
         {
@@ -2411,7 +2411,6 @@ export class ConsoleAutomationServer {
     enableAnomalyDetection?: boolean;
     customTags?: Record<string, string>;
   }) {
-    const monitoringSystem = this.consoleManager.getMonitoringSystem();
     const session = this.consoleManager.getSession(args.sessionId);
 
     if (!session) {
@@ -2421,18 +2420,7 @@ export class ConsoleAutomationServer {
       );
     }
 
-    await monitoringSystem.startSessionMonitoring(args.sessionId, {
-      command: session.command,
-      args: session.args,
-      pid: session.pid!,
-      enableMetrics: args.enableMetrics,
-      enableTracing: args.enableTracing,
-      enableProfiling: args.enableProfiling,
-      enableAuditing: args.enableAuditing,
-      enableAnomalyDetection: args.enableAnomalyDetection,
-      customTags: args.customTags,
-    });
-
+    // Monitoring is now handled automatically by HealthOrchestrator
     return {
       content: [
         {
@@ -2444,9 +2432,7 @@ export class ConsoleAutomationServer {
   }
 
   private async handleStopMonitoring(args: { sessionId: string }) {
-    const monitoringSystem = this.consoleManager.getMonitoringSystem();
-    await monitoringSystem.stopSessionMonitoring(args.sessionId);
-
+    // Monitoring is now handled automatically by HealthOrchestrator
     return {
       content: [
         {
