@@ -15,14 +15,14 @@ import {
   ExtendedErrorPattern,
   CommandExecution,
   AzureConnectionOptions,
-  AzureTokenInfo,
+  // AzureTokenInfo — removed, now used only in AzureSessionManager
   SerialConnectionOptions,
   WSLConnectionOptions,
   WSLSession,
   SFTPSessionOptions,
   FileTransferSession,
   SFTPTransferOptions,
-  AWSSSMConnectionOptions,
+  // AWSSSMConnectionOptions — removed, now used only in AWSSSMSessionManager
   RDPConnectionOptions,
   RDPSession,
   WinRMConnectionOptions,
@@ -74,7 +74,7 @@ import {
   IProtocol,
   ProtocolDetector,
 } from './ProtocolFactory.js';
-import { AzureMonitoring } from '../monitoring/AzureMonitoring.js';
+// AzureMonitoring import removed — now owned by AzureSessionManager
 import {
   ConfigManager,
   ConnectionProfile,
@@ -102,6 +102,11 @@ import {
   WebSocketTerminalSessionManager,
   WebSocketTerminalSessionHost,
 } from './WebSocketTerminalSessionManager.js';
+import { AzureSessionManager } from './AzureSessionManager.js';
+import {
+  AWSSSMSessionManager,
+  AWSSSMSessionHost,
+} from './AWSSSMSessionManager.js';
 // JobManager functionality integrated into SessionManager
 import PQueue from 'p-queue';
 import { platform } from 'os';
@@ -153,6 +158,10 @@ export class ConsoleManager
   private serialSessionManager!: SerialSessionManager;
   // WebSocket terminal session management — owned by WebSocketTerminalSessionManager
   private wsTerminalSessionManager!: WebSocketTerminalSessionManager;
+  // Azure session management — owned by AzureSessionManager
+  private azureSessionManager!: AzureSessionManager;
+  // AWS SSM session management — owned by AWSSSMSessionManager
+  private awsSSMSessionManager!: AWSSSMSessionManager;
 
   // Convenience getters for sub-components (backwards compat within ConsoleManager)
   private get healthMonitor(): HealthMonitor {
@@ -180,8 +189,7 @@ export class ConsoleManager
   >;
   private protocolSessionIdMap: Map<string, string>; // Maps ConsoleManager sessionId to protocol sessionId
 
-  // Azure monitoring support (kept separate as it's not a protocol)
-  private azureMonitoring: AzureMonitoring;
+  // azureMonitoring — removed, now owned by AzureSessionManager
 
   // Protocol cache for factory-created instances
   private protocolCache: Map<string, IProtocol> = new Map();
@@ -192,8 +200,8 @@ export class ConsoleManager
   private ipcProtocols: Map<string, any>;
   private ipmiProtocols: Map<string, any>;
   private kubernetesProtocol?: any;
-  private awsSSMProtocol?: any;
-  private azureProtocol?: any;
+  // awsSSMProtocol — removed, now managed by AWSSSMSessionManager
+  // azureProtocol — removed, now managed by AzureSessionManager
   // webSocketTerminalProtocol — removed, now managed by WebSocketTerminalSessionManager
   private rdpProtocol?: any;
   private wslProtocol?: any;
@@ -354,6 +362,18 @@ export class ConsoleManager
       this.logger
     );
 
+    // Initialize Azure session manager
+    this.azureSessionManager = new AzureSessionManager(
+      this.buildProtocolSessionHost(),
+      this.logger
+    );
+
+    // Initialize AWS SSM session manager
+    this.awsSSMSessionManager = new AWSSSMSessionManager(
+      this.buildAWSSSMSessionHost(),
+      this.logger
+    );
+
     // Setup event listeners for integration
     this.setupPoolingIntegration();
     this.setupErrorRecoveryHandlers();
@@ -371,8 +391,7 @@ export class ConsoleManager
     this.protocolSessions = new Map();
     this.protocolSessionIdMap = new Map();
 
-    // Initialize Azure monitoring (not a protocol)
-    this.azureMonitoring = new AzureMonitoring(this.logger.getWinstonLogger());
+    // azureMonitoring init removed — now owned by AzureSessionManager
 
     // Setup protocol integrations will be handled on-demand
   }
@@ -1038,6 +1057,28 @@ export class ConsoleManager
       ...this.buildProtocolSessionHost(),
       updateSessionActivity: (id: string, metadata?: Record<string, unknown>) =>
         this.sessionManager.updateSessionActivity(id, metadata),
+    };
+  }
+
+  /**
+   * Build an AWSSSMSessionHost — extends ProtocolSessionHost with SSM-specific methods.
+   */
+  private buildAWSSSMSessionHost(): AWSSSMSessionHost {
+    return {
+      ...this.buildProtocolSessionHost(),
+      findSessionBySSMId: (ssmSessionId: string) =>
+        Array.from(this.sessions.values()).find(
+          (s) => s.awsSSMSessionId === ssmSessionId
+        ),
+      addToHeartbeatMonitor: (sessionId: string, info: any) => {
+        if (this.heartbeatMonitor) {
+          this.heartbeatMonitor.addSession(sessionId, info);
+        }
+      },
+      addHealthCheckInterval: (sessionId: string, interval: ReturnType<typeof setInterval>) => {
+        this.sessionHealthCheckIntervals = this.sessionHealthCheckIntervals || new Map();
+        this.sessionHealthCheckIntervals.set(sessionId, interval);
+      },
     };
   }
 
@@ -3012,473 +3053,14 @@ export class ConsoleManager
   }
 
   /**
-   * Create AWS SSM session using AWS Systems Manager Session Manager
+   * Create AWS SSM session — delegates to AWSSSMSessionManager
    */
   private async createAWSSSMSession(
     sessionId: string,
     session: ConsoleSession,
     options: SessionOptions
   ): Promise<string> {
-    if (
-      !options.awsSSMOptions &&
-      !['aws-ssm', 'ssm-session', 'ssm-tunnel'].includes(
-        options.consoleType || ''
-      )
-    ) {
-      throw new Error(
-        'AWS SSM options or AWS SSM console type required for AWS SSM session'
-      );
-    }
-
-    try {
-      // Initialize AWS SSM protocol if not already done
-      if (!this.awsSSMProtocol) {
-        const ssmConfig: AWSSSMConnectionOptions = options.awsSSMOptions || {
-          region:
-            process.env.AWS_REGION ||
-            process.env.AWS_DEFAULT_REGION ||
-            'us-east-1',
-        };
-
-        // Ensure required region is provided
-        if (!ssmConfig.region) {
-          ssmConfig.region =
-            process.env.AWS_REGION ||
-            process.env.AWS_DEFAULT_REGION ||
-            'us-east-1';
-        }
-
-        this.awsSSMProtocol =
-          await this.protocolFactory.createProtocol('aws-ssm');
-        this.setupAWSSSMProtocolEventHandlers();
-      }
-
-      // Determine session type based on console type and options
-      const ssmSessionType = this.determineSSMSessionType(options);
-
-      let ssmSessionId: string;
-
-      switch (ssmSessionType) {
-        case 'interactive':
-          // Start interactive shell session
-          if (!options.awsSSMOptions?.instanceId) {
-            throw new Error(
-              'Instance ID is required for interactive SSM sessions'
-            );
-          }
-          ssmSessionId = await this.awsSSMProtocol.startSession(
-            options.awsSSMOptions
-          );
-          break;
-
-        case 'port-forwarding':
-          // Start port forwarding session
-          if (
-            !options.awsSSMOptions?.instanceId ||
-            !options.awsSSMOptions?.portNumber
-          ) {
-            throw new Error(
-              'Instance ID and port number are required for SSM port forwarding'
-            );
-          }
-          ssmSessionId = await this.awsSSMProtocol.startPortForwardingSession(
-            options.awsSSMOptions.instanceId,
-            options.awsSSMOptions.portNumber,
-            options.awsSSMOptions.localPortNumber
-          );
-          break;
-
-        case 'command':
-          // Execute command via SSM
-          if (!options.awsSSMOptions?.documentName) {
-            throw new Error(
-              'Document name is required for SSM command execution'
-            );
-          }
-          ssmSessionId = await this.awsSSMProtocol.sendCommand(
-            options.awsSSMOptions.documentName,
-            options.awsSSMOptions.parameters || {},
-            options.awsSSMOptions.instanceId
-              ? [
-                  {
-                    type: 'instance',
-                    id: options.awsSSMOptions.instanceId,
-                  },
-                ]
-              : undefined
-          );
-          break;
-
-        default:
-          throw new Error(
-            `Unsupported AWS SSM session type: ${ssmSessionType}`
-          );
-      }
-
-      // Update session with SSM-specific information
-      session.awsSSMSessionId = ssmSessionId;
-      session.awsSSMOptions = options.awsSSMOptions;
-
-      // Store session
-      this.sessions.set(sessionId, session);
-
-      // Set up session monitoring
-      this.setupSSMSessionMonitoring(sessionId, ssmSessionId);
-
-      this.logger.info(
-        `AWS SSM session created: ${sessionId} (SSM: ${ssmSessionId}, type: ${ssmSessionType})`
-      );
-      this.emit('session-created', {
-        sessionId,
-        type: 'aws-ssm',
-        ssmSessionId,
-        ssmSessionType,
-      });
-
-      return sessionId;
-    } catch (error) {
-      this.logger.error(
-        `Failed to create AWS SSM session ${sessionId}:`,
-        error
-      );
-      throw error;
-    }
-  }
-
-  /**
-   * Determine the type of SSM session based on options and console type
-   */
-  private determineSSMSessionType(
-    options: SessionOptions
-  ): 'interactive' | 'port-forwarding' | 'command' {
-    const consoleType = options.consoleType;
-
-    if (consoleType === 'ssm-tunnel' || options.awsSSMOptions?.portNumber) {
-      return 'port-forwarding';
-    }
-
-    if (consoleType === 'aws-ssm' || consoleType === 'ssm-session') {
-      return options.awsSSMOptions?.documentName ? 'command' : 'interactive';
-    }
-
-    // Default to interactive for AWS SSM console types
-    return 'interactive';
-  }
-
-  /**
-   * Set up event handlers for AWS SSM Protocol
-   */
-  private setupAWSSSMProtocolEventHandlers(): void {
-    this.awsSSMProtocol.on('output', (output: ConsoleOutput) => {
-      this.handleSSMOutput(output);
-    });
-
-    this.awsSSMProtocol.on(
-      'session-started',
-      (data: { sessionId: string; instanceId?: string }) => {
-        this.logger.info(`AWS SSM session started: ${data.sessionId}`);
-        this.emit('console-event', {
-          sessionId: data.sessionId,
-          type: 'started',
-          timestamp: new Date(),
-          data,
-        });
-      }
-    );
-
-    this.awsSSMProtocol.on(
-      'session-terminated',
-      (data: { sessionId: string }) => {
-        this.logger.info(`AWS SSM session terminated: ${data.sessionId}`);
-        this.handleSSMSessionTermination(data.sessionId);
-      }
-    );
-
-    this.awsSSMProtocol.on(
-      'session-error',
-      (data: { sessionId: string; error: Error }) => {
-        this.logger.error(
-          `AWS SSM session error: ${data.sessionId}`,
-          data.error
-        );
-        this.handleSSMSessionError(data.sessionId, data.error);
-      }
-    );
-
-    this.awsSSMProtocol.on(
-      'port-forwarding-started',
-      (data: {
-        sessionId: string;
-        targetId: string;
-        portNumber: number;
-        localPortNumber: number;
-      }) => {
-        this.logger.info(
-          `AWS SSM port forwarding started: ${data.sessionId} (${data.targetId}:${data.portNumber} -> localhost:${data.localPortNumber})`
-        );
-        this.emit('console-event', {
-          sessionId: data.sessionId,
-          type: 'started',
-          timestamp: new Date(),
-          data,
-        });
-      }
-    );
-
-    this.awsSSMProtocol.on(
-      'command-sent',
-      (data: { commandId: string; documentName: string }) => {
-        this.logger.info(
-          `AWS SSM command sent: ${data.commandId} (${data.documentName})`
-        );
-      }
-    );
-
-    this.awsSSMProtocol.on(
-      'command-completed',
-      (data: { commandId: string; status: string }) => {
-        this.logger.info(
-          `AWS SSM command completed: ${data.commandId} (${data.status})`
-        );
-      }
-    );
-
-    this.awsSSMProtocol.on(
-      'health-check',
-      (data: { status: string; timestamp: Date; error?: unknown }) => {
-        if (data.status === 'unhealthy') {
-          this.logger.warn(`AWS SSM protocol health check failed:`, data.error);
-        }
-      }
-    );
-
-    this.awsSSMProtocol.on(
-      'session-recovered',
-      (data: { sessionId: string }) => {
-        this.logger.info(`AWS SSM session recovered: ${data.sessionId}`);
-      }
-    );
-  }
-
-  /**
-   * Handle AWS SSM output
-   */
-  private handleSSMOutput(output: ConsoleOutput): void {
-    // Find the corresponding console session
-    const session = Array.from(this.sessions.values()).find(
-      (s) => s.awsSSMSessionId === output.sessionId
-    );
-    if (session) {
-      // Update output with console session ID
-      const consoleOutput: ConsoleOutput = {
-        ...output,
-        sessionId: session.id,
-      };
-
-      // Store output in buffer
-      const outputs = this.outputBuffers.get(session.id) || [];
-      outputs.push(consoleOutput);
-      this.outputBuffers.set(session.id, outputs);
-      // Also add to pagination manager for large output handling
-      this.paginationManager.addOutputs(session.id, [consoleOutput]);
-
-      // Emit output event
-      this.emit('output', consoleOutput);
-      this.emit('console-event', {
-        sessionId: session.id,
-        type: 'output',
-        timestamp: new Date(),
-        data: consoleOutput,
-      });
-
-      // Process output for error detection
-      if (this.errorDetector) {
-        this.errorDetector.processOutput(consoleOutput);
-      }
-    }
-  }
-
-  /**
-   * Handle AWS SSM session termination
-   */
-  private handleSSMSessionTermination(ssmSessionId: string): void {
-    const session = Array.from(this.sessions.values()).find(
-      (s) => s.awsSSMSessionId === ssmSessionId
-    );
-    if (session) {
-      // Remove session from the map on SSM termination
-      this.sessions.delete(session.id);
-
-      this.emit('console-event', {
-        sessionId: session.id,
-        type: 'stopped',
-        timestamp: new Date(),
-        data: { ssmSessionId },
-      });
-    }
-  }
-
-  /**
-   * Handle AWS SSM session errors
-   */
-  private handleSSMSessionError(ssmSessionId: string, error: Error): void {
-    const session = Array.from(this.sessions.values()).find(
-      (s) => s.awsSSMSessionId === ssmSessionId
-    );
-    if (session) {
-      session.status = 'crashed';
-      this.sessions.set(session.id, session);
-
-      this.emit('console-event', {
-        sessionId: session.id,
-        type: 'error',
-        timestamp: new Date(),
-        data: { error: error.message, ssmSessionId },
-      });
-
-      // Attempt error recovery if enabled
-      if (this.selfHealingEnabled) {
-        this.attemptSSMSessionRecovery(session.id, ssmSessionId, error);
-      }
-    }
-  }
-
-  /**
-   * Set up monitoring for AWS SSM session
-   */
-  private setupSSMSessionMonitoring(
-    sessionId: string,
-    ssmSessionId: string
-  ): void {
-    // Add to session monitoring
-    if (this.heartbeatMonitor) {
-      this.heartbeatMonitor.addSession(sessionId, {
-        id: sessionId,
-        status: 'running',
-        type: 'aws-ssm',
-        createdAt: new Date(),
-        lastActivity: new Date(),
-        recoveryAttempts: 0,
-        maxRecoveryAttempts: 3,
-        healthScore: 100,
-      });
-    }
-
-    // Start health checks
-    const healthCheckInterval = setInterval(async () => {
-      if (!this.awsSSMProtocol.isHealthy()) {
-        this.logger.warn(
-          `AWS SSM protocol unhealthy, attempting recovery for session ${sessionId}`
-        );
-        await this.attemptSSMSessionRecovery(
-          sessionId,
-          ssmSessionId,
-          new Error('Protocol unhealthy')
-        );
-      }
-    }, 60000); // Check every minute
-
-    // Store interval for cleanup
-    this.sessionHealthCheckIntervals =
-      this.sessionHealthCheckIntervals || new Map();
-    this.sessionHealthCheckIntervals.set(sessionId, healthCheckInterval);
-  }
-
-  /**
-   * Attempt to recover an AWS SSM session
-   */
-  private async attemptSSMSessionRecovery(
-    sessionId: string,
-    ssmSessionId: string,
-    error: Error
-  ): Promise<void> {
-    try {
-      this.logger.info(`Attempting AWS SSM session recovery for ${sessionId}`);
-
-      // Get session information
-      const session = this.sessions.get(sessionId);
-      if (!session || !session.awsSSMOptions) {
-        this.logger.warn(
-          `Cannot recover AWS SSM session ${sessionId}: session or options not found`
-        );
-        return;
-      }
-
-      // Try to terminate old session gracefully
-      try {
-        await this.awsSSMProtocol.terminateSession(ssmSessionId);
-      } catch (terminateError) {
-        this.logger.warn(
-          `Failed to terminate old SSM session ${ssmSessionId}:`,
-          terminateError
-        );
-      }
-
-      // Create new session with same options
-      const ssmSessionType = this.determineSSMSessionType({
-        consoleType: session.type,
-        awsSSMOptions: session.awsSSMOptions,
-        command: session.command || '/bin/bash', // Default command if not available
-      });
-
-      let newSsmSessionId: string;
-
-      switch (ssmSessionType) {
-        case 'interactive':
-          newSsmSessionId = await this.awsSSMProtocol.startSession(
-            session.awsSSMOptions
-          );
-          break;
-        case 'port-forwarding':
-          newSsmSessionId =
-            await this.awsSSMProtocol.startPortForwardingSession(
-              session.awsSSMOptions.instanceId!,
-              session.awsSSMOptions.portNumber!,
-              session.awsSSMOptions.localPortNumber
-            );
-          break;
-        case 'command':
-          newSsmSessionId = await this.awsSSMProtocol.sendCommand(
-            session.awsSSMOptions.documentName!,
-            session.awsSSMOptions.parameters || {},
-            session.awsSSMOptions.instanceId
-              ? [
-                  {
-                    type: 'instance',
-                    id: session.awsSSMOptions.instanceId,
-                  },
-                ]
-              : undefined
-          );
-          break;
-      }
-
-      // Update session with new SSM session ID
-      session.awsSSMSessionId = newSsmSessionId;
-      session.status = 'running';
-      this.sessions.set(sessionId, session);
-
-      this.logger.info(
-        `AWS SSM session recovery successful: ${sessionId} (new SSM: ${newSsmSessionId})`
-      );
-      this.emit('session-recovered', {
-        sessionId,
-        newSsmSessionId,
-        ssmSessionType,
-      });
-    } catch (recoveryError) {
-      this.logger.error(
-        `AWS SSM session recovery failed for ${sessionId}:`,
-        recoveryError
-      );
-
-      // Mark session as failed
-      const session = this.sessions.get(sessionId);
-      if (session) {
-        session.status = 'crashed';
-        this.sessions.set(sessionId, session);
-      }
-    }
+    return this.awsSSMSessionManager.createSession(sessionId, session, options);
   }
 
   /**
@@ -4942,8 +4524,8 @@ export class ConsoleManager
           return this.addCommandToQueue(sessionId, input);
         }
 
-        // Handle AWS SSM session
-        if (session.awsSSMOptions && this.awsSSMProtocol) {
+        // Handle AWS SSM session — delegates to AWSSSMSessionManager
+        if (session.awsSSMOptions) {
           return this.sendInputToAWSSSM(sessionId, input);
         }
 
@@ -5269,43 +4851,14 @@ export class ConsoleManager
   /**
    * Send input to AWS SSM session
    */
+  /**
+   * Send input to AWS SSM session — delegates to AWSSSMSessionManager
+   */
   private async sendInputToAWSSSM(
     sessionId: string,
     input: string
   ): Promise<void> {
-    if (!this.awsSSMProtocol) {
-      throw new Error('AWS SSM protocol not initialized');
-    }
-
-    const session = this.sessions.get(sessionId);
-    if (!session || !session.awsSSMSessionId) {
-      throw new Error(
-        `AWS SSM session ${sessionId} not found or SSM session ID missing`
-      );
-    }
-
-    try {
-      // Send input to AWS SSM session
-      await this.awsSSMProtocol.sendInput(session.awsSSMSessionId, input);
-
-      // Emit input event
-      this.emitEvent({
-        sessionId,
-        type: 'input',
-        timestamp: new Date(),
-        data: { input },
-      });
-
-      this.logger.debug(
-        `Sent input to AWS SSM session ${sessionId}: ${input.substring(0, 100)}${input.length > 100 ? '...' : ''}`
-      );
-    } catch (error) {
-      this.logger.error(
-        `Failed to send input to AWS SSM session ${sessionId}:`,
-        error
-      );
-      throw error;
-    }
+    return this.awsSSMSessionManager.sendInput(sessionId, input);
   }
 
   /**
@@ -6713,6 +6266,12 @@ export class ConsoleManager
     // Clean up WebSocket terminal session manager
     await this.wsTerminalSessionManager.destroy();
 
+    // Clean up Azure session manager
+    await this.azureSessionManager.destroy();
+
+    // Clean up AWS SSM session manager
+    await this.awsSSMSessionManager.destroy();
+
     // Clean up all cached protocols
     for (const [type, protocol] of this.protocolCache) {
       try {
@@ -6726,8 +6285,8 @@ export class ConsoleManager
     // Clean up legacy protocol instances
     const legacyProtocols: Array<{ name: string; instance: any }> = [
       { name: 'kubernetes', instance: this.kubernetesProtocol },
-      { name: 'aws-ssm', instance: this.awsSSMProtocol },
-      { name: 'azure', instance: this.azureProtocol },
+      // aws-ssm — removed, now managed by AWSSSMSessionManager
+      // azure — removed, now managed by AzureSessionManager
       { name: 'rdp', instance: this.rdpProtocol },
       { name: 'wsl', instance: this.wslProtocol },
       { name: 'ansible', instance: this.ansibleProtocol },
@@ -7453,317 +7012,61 @@ export class ConsoleManager
     return Math.min(cost, 1.0); // Cap at 1.0
   }
 
-  /**
-   * Setup Azure protocol integration
-   */
-  private setupAzureIntegration(): void {
-    this.azureProtocol.on('connected', (sessionId: string) => {
-      this.logger.info(`Azure session connected: ${sessionId}`);
-      this.emit('azure-connected', { sessionId });
-      // Record successful connection for monitoring
-      this.azureMonitoring.recordConnectionEvent(sessionId, 'success');
-    });
-
-    this.azureProtocol.on('disconnected', (sessionId: string) => {
-      this.logger.info(`Azure session disconnected: ${sessionId}`);
-      this.emit('azure-disconnected', { sessionId });
-      // Unregister from monitoring
-      this.azureMonitoring.unregisterSession(sessionId);
-    });
-
-    this.azureProtocol.on('error', (sessionId: string, error: Error) => {
-      this.logger.error(`Azure session error: ${sessionId}`, error);
-      this.emit('azure-error', { sessionId, error });
-
-      // Record error for monitoring
-      if (error.message.includes('auth')) {
-        this.azureMonitoring.recordErrorEvent('authentication', error);
-      } else if (error.message.includes('network')) {
-        this.azureMonitoring.recordErrorEvent('network', error);
-      } else {
-        this.azureMonitoring.recordErrorEvent('api', error);
-      }
-
-      // Record connection failure
-      this.azureMonitoring.recordConnectionEvent(sessionId, 'failure');
-    });
-
-    this.azureProtocol.on('output', (sessionId: string, output: ConsoleOutput) => {
-      // Forward Azure output to the console system
-      const outputBuffer = this.outputBuffers.get(sessionId) || [];
-      outputBuffer.push(output);
-
-      if (outputBuffer.length > this.maxBufferSize) {
-        outputBuffer.shift();
-      }
-
-      this.outputBuffers.set(sessionId, outputBuffer);
-      this.emit('console-event', {
-        sessionId,
-        type: 'output',
-        timestamp: new Date(),
-        data: output,
-      });
-    });
-
-    this.azureProtocol.on('token-refreshed', (sessionId: string, tokenInfo: AzureTokenInfo) => {
-      this.logger.debug(`Azure token refreshed for session: ${sessionId}`);
-      this.emit('azure-token-refreshed', { sessionId, tokenInfo });
-      // Record token refresh for monitoring
-      this.azureMonitoring.recordAuthenticationEvent(
-        'token-refresh',
-        tokenInfo
-      );
-    });
-
-    this.azureProtocol.on('session-ready', (sessionId: string) => {
-      this.logger.info(`Azure session ready: ${sessionId}`);
-      this.emit('azure-session-ready', { sessionId });
-    });
-
-    this.azureProtocol.on('reconnecting', (sessionId: string, attempt: number) => {
-      this.logger.info(
-        `Azure session reconnecting: ${sessionId} (attempt ${attempt})`
-      );
-      this.emit('azure-reconnecting', { sessionId, attempt });
-    });
-
-    this.logger.info('Azure protocol integration setup completed');
-  }
+  // setupAzureIntegration() — removed, now in AzureSessionManager.setupEventHandlers()
+  // createAzureCloudShellSession() — removed, now in AzureSessionManager.createCloudShellSession()
+  // createAzureBastionSession() — removed, now in AzureSessionManager.createBastionSession()
+  // createAzureArcSession() — removed, now in AzureSessionManager.createArcSession()
 
   /**
-   * Create Azure Cloud Shell session
-   */
-  private async createAzureCloudShellSession(
-    sessionId: string,
-    options: SessionOptions
-  ): Promise<string> {
-    if (!options.azureOptions) {
-      throw new Error(
-        'Azure options are required for Azure Cloud Shell session'
-      );
-    }
-
-    try {
-      this.logger.info(`Creating Azure Cloud Shell session: ${sessionId}`);
-
-      const azureSession = await this.azureProtocol.createCloudShellSession(
-        sessionId,
-        options.azureOptions
-      );
-
-      // Register session with monitoring
-      this.azureMonitoring.registerSession(azureSession);
-
-      // Store session information
-      const session = this.sessions.get(sessionId);
-      if (session) {
-        session.status = 'running';
-        session.type = 'azure-shell';
-        this.sessions.set(sessionId, session);
-      }
-
-      // Register with monitoring systems
-      await this.registerSessionWithHealthMonitoring(
-        sessionId,
-        session!,
-        options
-      );
-
-      this.logger.info(
-        `Azure Cloud Shell session created successfully: ${sessionId}`
-      );
-      return sessionId;
-    } catch (error) {
-      this.logger.error(
-        `Failed to create Azure Cloud Shell session: ${sessionId}`,
-        error
-      );
-      throw error;
-    }
-  }
-
-  /**
-   * Create Azure Bastion session
-   */
-  private async createAzureBastionSession(
-    sessionId: string,
-    options: SessionOptions
-  ): Promise<string> {
-    if (!options.azureOptions) {
-      throw new Error('Azure options are required for Azure Bastion session');
-    }
-
-    try {
-      this.logger.info(`Creating Azure Bastion session: ${sessionId}`);
-
-      const azureSession = await this.azureProtocol.createBastionSession(
-        sessionId,
-        options.azureOptions
-      );
-
-      // Register session with monitoring
-      this.azureMonitoring.registerSession(azureSession);
-
-      // Store session information
-      const session = this.sessions.get(sessionId);
-      if (session) {
-        session.status = 'running';
-        session.type = 'azure-bastion';
-        this.sessions.set(sessionId, session);
-      }
-
-      // Register with monitoring systems
-      await this.registerSessionWithHealthMonitoring(
-        sessionId,
-        session!,
-        options
-      );
-
-      this.logger.info(
-        `Azure Bastion session created successfully: ${sessionId}`
-      );
-      return sessionId;
-    } catch (error) {
-      this.logger.error(
-        `Failed to create Azure Bastion session: ${sessionId}`,
-        error
-      );
-      throw error;
-    }
-  }
-
-  /**
-   * Create Azure Arc session
-   */
-  private async createAzureArcSession(
-    sessionId: string,
-    options: SessionOptions
-  ): Promise<string> {
-    if (!options.azureOptions) {
-      throw new Error('Azure options are required for Azure Arc session');
-    }
-
-    try {
-      this.logger.info(`Creating Azure Arc session: ${sessionId}`);
-
-      const azureSession = await this.azureProtocol.createArcSession(
-        sessionId,
-        options.azureOptions
-      );
-
-      // Register session with monitoring
-      this.azureMonitoring.registerSession(azureSession);
-
-      // Store session information
-      const session = this.sessions.get(sessionId);
-      if (session) {
-        session.status = 'running';
-        session.type = 'azure-ssh';
-        this.sessions.set(sessionId, session);
-      }
-
-      // Register with monitoring systems
-      await this.registerSessionWithHealthMonitoring(
-        sessionId,
-        session!,
-        options
-      );
-
-      this.logger.info(`Azure Arc session created successfully: ${sessionId}`);
-      return sessionId;
-    } catch (error) {
-      this.logger.error(
-        `Failed to create Azure Arc session: ${sessionId}`,
-        error
-      );
-      throw error;
-    }
-  }
-
-  /**
-   * Send input to Azure session
+   * Send input to Azure session (delegates to AzureSessionManager)
    */
   private async sendInputToAzureSession(
     sessionId: string,
     input: string
   ): Promise<void> {
-    try {
-      await this.azureProtocol.sendInput(sessionId, input);
-    } catch (error) {
-      this.logger.error(
-        `Failed to send input to Azure session ${sessionId}:`,
-        error
-      );
-      throw error;
-    }
+    return this.azureSessionManager.sendInput(sessionId, input);
   }
 
   /**
-   * Cleanup Azure session
+   * Cleanup Azure session (delegates to AzureSessionManager)
    */
   private async cleanupAzureSession(sessionId: string): Promise<void> {
-    try {
-      await this.azureProtocol.closeSession(sessionId);
-      this.logger.info(`Azure session cleaned up: ${sessionId}`);
-    } catch (error) {
-      this.logger.error(`Failed to cleanup Azure session ${sessionId}:`, error);
-    }
+    return this.azureSessionManager.cleanupSession(sessionId);
   }
 
   /**
-   * Handle Azure session based on console type
+   * Handle Azure session based on console type (delegates to AzureSessionManager)
    */
   private async createAzureSession(
     sessionId: string,
     options: SessionOptions
   ): Promise<string> {
-    const consoleType = options.consoleType || 'azure-shell';
-
-    switch (consoleType) {
-      case 'azure-shell':
-        return await this.createAzureCloudShellSession(sessionId, options);
-
-      case 'azure-bastion':
-        return await this.createAzureBastionSession(sessionId, options);
-
-      case 'azure-ssh':
-        return await this.createAzureArcSession(sessionId, options);
-
-      default:
-        // Default to Cloud Shell if Azure options provided but type unclear
-        return await this.createAzureCloudShellSession(sessionId, options);
-    }
+    return this.azureSessionManager.createSession(sessionId, options);
   }
 
   /**
-   * Get Azure session metrics and health
+   * Get Azure session metrics and health (delegates to AzureSessionManager)
    */
   getAzureSessionMetrics(sessionId: string): Record<string, unknown> {
-    return this.azureProtocol.getSessionMetrics(sessionId);
+    return this.azureSessionManager.getSessionMetrics(sessionId);
   }
 
   /**
-   * Check Azure session health
+   * Check Azure session health (delegates to AzureSessionManager)
    */
   async checkAzureSessionHealth(sessionId: string): Promise<boolean> {
-    return await this.azureProtocol.healthCheck(sessionId);
+    return this.azureSessionManager.checkSessionHealth(sessionId);
   }
 
   /**
-   * Resize Azure session terminal
+   * Resize Azure session terminal (delegates to AzureSessionManager)
    */
   async resizeAzureSession(
     sessionId: string,
     rows: number,
     cols: number
   ): Promise<void> {
-    try {
-      await this.azureProtocol.resizeTerminal(sessionId, rows, cols);
-    } catch (error) {
-      this.logger.error(`Failed to resize Azure session ${sessionId}:`, error);
-      throw error;
-    }
+    return this.azureSessionManager.resizeSession(sessionId, rows, cols);
   }
 
   /**
@@ -7819,24 +7122,24 @@ export class ConsoleManager
   }
 
   /**
-   * Get Azure monitoring metrics
+   * Get Azure monitoring metrics (delegates to AzureSessionManager)
    */
   getAzureMonitoringMetrics() {
-    return this.azureMonitoring.getMetrics();
+    return this.azureSessionManager.getMonitoringMetrics();
   }
 
   /**
-   * Perform Azure health check
+   * Perform Azure health check (delegates to AzureSessionManager)
    */
   async performAzureHealthCheck() {
-    return await this.azureMonitoring.performHealthCheck();
+    return await this.azureSessionManager.performHealthCheck();
   }
 
   /**
-   * Update Azure cost estimates for a session
+   * Update Azure cost estimates for a session (delegates to AzureSessionManager)
    */
   updateAzureCostEstimate(sessionId: string, costEstimate: number) {
-    this.azureMonitoring.updateCostEstimates(sessionId, costEstimate);
+    this.azureSessionManager.updateCostEstimate(sessionId, costEstimate);
   }
 
   /**
