@@ -108,6 +108,7 @@ import {
   AWSSSMSessionHost,
 } from './AWSSSMSessionManager.js';
 import { KubernetesSessionManager } from './KubernetesSessionManager.js';
+import { RDPSessionManager } from './RDPSessionManager.js';
 // JobManager functionality integrated into SessionManager
 import PQueue from 'p-queue';
 import { platform } from 'os';
@@ -165,6 +166,8 @@ export class ConsoleManager
   private awsSSMSessionManager!: AWSSSMSessionManager;
   // Kubernetes session management — owned by KubernetesSessionManager
   private kubernetesSessionManager!: KubernetesSessionManager;
+  // RDP session management — owned by RDPSessionManager
+  private rdpSessionManager!: RDPSessionManager;
 
   // Convenience getters for sub-components (backwards compat within ConsoleManager)
   private get healthMonitor(): HealthMonitor {
@@ -206,12 +209,12 @@ export class ConsoleManager
   // awsSSMProtocol — removed, now managed by AWSSSMSessionManager
   // azureProtocol — removed, now managed by AzureSessionManager
   // webSocketTerminalProtocol — removed, now managed by WebSocketTerminalSessionManager
-  private rdpProtocol?: any;
+  // rdpProtocol — removed, now managed by RDPSessionManager
   private wslProtocol?: any;
   private ansibleProtocol?: any;
 
   // Legacy session tracking (to be migrated)
-  private rdpSessions: Map<string, RDPSession>;
+  // rdpSessions — removed, now managed by RDPSessionManager
   private winrmSessions: Map<string, WinRMSessionState>;
   private vncSessions: Map<string, VNCSession>;
   private vncFramebuffers: Map<string, VNCFramebuffer>;
@@ -257,7 +260,6 @@ export class ConsoleManager
     this.fileTransferSessions = new Map();
     this.outputBuffers = new Map();
     this.streamManagers = new Map();
-    this.rdpSessions = new Map();
     this.sessionHealthCheckIntervals = new Map();
 
     // Legacy session tracking (to be fully migrated)
@@ -379,6 +381,12 @@ export class ConsoleManager
 
     // Initialize Kubernetes session manager
     this.kubernetesSessionManager = new KubernetesSessionManager(
+      this.buildProtocolSessionHost(),
+      this.logger
+    );
+
+    // Initialize RDP session manager
+    this.rdpSessionManager = new RDPSessionManager(
       this.buildProtocolSessionHost(),
       this.logger
     );
@@ -5747,6 +5755,9 @@ export class ConsoleManager
     // Clean up Kubernetes session manager
     await this.kubernetesSessionManager.destroy();
 
+    // Clean up RDP session manager
+    await this.rdpSessionManager.destroy();
+
     // Clean up all cached protocols
     for (const [type, protocol] of this.protocolCache) {
       try {
@@ -5762,7 +5773,7 @@ export class ConsoleManager
       // kubernetes — removed, now managed by KubernetesSessionManager
       // aws-ssm — removed, now managed by AWSSSMSessionManager
       // azure — removed, now managed by AzureSessionManager
-      { name: 'rdp', instance: this.rdpProtocol },
+      // rdp — removed, now managed by RDPSessionManager
       { name: 'wsl', instance: this.wslProtocol },
       { name: 'ansible', instance: this.ansibleProtocol },
     ];
@@ -5782,7 +5793,7 @@ export class ConsoleManager
     this.vncProtocols?.clear();
     this.ipcProtocols?.clear();
     this.ipmiProtocols?.clear();
-    this.rdpSessions?.clear();
+    // rdpSessions — removed, now managed by RDPSessionManager
     this.winrmSessions?.clear();
     this.vncSessions?.clear();
     this.ipcSessions?.clear();
@@ -6617,90 +6628,12 @@ export class ConsoleManager
     this.azureSessionManager.updateCostEstimate(sessionId, costEstimate);
   }
 
-  /**
-   * Setup RDP protocol integration
-   */
-  private setupRDPIntegration(): void {
-    this.rdpProtocol.on('connected', (session: RDPSession) => {
-      this.logger.info(`RDP session connected: ${session.sessionId}`);
-      this.rdpSessions.set(session.sessionId, session);
-      this.emit('rdp-connected', { sessionId: session.sessionId, session });
-    });
-
-    this.rdpProtocol.on(
-      'disconnected',
-      (sessionId: string, reason?: string) => {
-        this.logger.info(`RDP session disconnected: ${sessionId}`, { reason });
-        this.rdpSessions.delete(sessionId);
-        this.emit('rdp-disconnected', { sessionId, reason });
-      }
-    );
-
-    this.rdpProtocol.on('error', (sessionId: string, error: Error) => {
-      this.logger.error(`RDP session error: ${sessionId}`, error);
-      this.emit('rdp-error', { sessionId, error });
-    });
-
-    this.rdpProtocol.on('output', (output: ConsoleOutput) => {
-      this.handleRDPOutput(output);
-    });
-
-    this.rdpProtocol.on(
-      'screen-update',
-      (sessionId: string, imageData: Buffer) => {
-        this.emit('rdp-screen-update', { sessionId, imageData });
-      }
-    );
-
-    this.rdpProtocol.on(
-      'clipboard-data',
-      (sessionId: string, data: string, format: string) => {
-        this.emit('rdp-clipboard-data', { sessionId, data, format });
-      }
-    );
-
-    this.rdpProtocol.on(
-      'file-transfer-progress',
-      (sessionId: string, progress: unknown) => {
-        this.emit('rdp-file-transfer-progress', { sessionId, progress });
-      }
-    );
-
-    this.rdpProtocol.on(
-      'performance-metrics',
-      (sessionId: string, metrics: unknown) => {
-        this.emit('rdp-performance-metrics', { sessionId, metrics });
-      }
-    );
-
-    this.logger.info('RDP Protocol integration initialized');
-  }
+  // setupRDPIntegration() — removed, now in RDPSessionManager.setupEventHandlers()
+  // handleRDPOutput() — removed, now in RDPSessionManager.handleOutput()
 
   // setupWebSocketTerminalIntegration() — removed, now in WebSocketTerminalSessionManager.setupEventHandlers()
   // handleWebSocketTerminalOutput() — removed, now in WebSocketTerminalSessionManager.handleOutput()
   // attemptWebSocketTerminalRecovery() — removed, now in WebSocketTerminalSessionManager.attemptRecovery()
-
-  /**
-   * Handle RDP output
-   */
-  private handleRDPOutput(output: ConsoleOutput): void {
-    // Store output in buffer
-    if (!this.outputBuffers.has(output.sessionId)) {
-      this.outputBuffers.set(output.sessionId, []);
-    }
-    const buffer = this.outputBuffers.get(output.sessionId)!;
-    buffer.push(output);
-
-    // Emit output event
-    this.emit('output', output);
-
-    // Update session last activity
-    const rdpSession = this.rdpSessions.get(output.sessionId);
-    if (rdpSession) {
-      rdpSession.lastActivity = new Date();
-      this.rdpSessions.set(output.sessionId, rdpSession);
-    }
-  }
 
   /**
    * Handle WinRM output
@@ -6739,58 +6672,13 @@ export class ConsoleManager
   }
 
   /**
-   * Create RDP session
+   * Create RDP session — delegates to RDPSessionManager
    */
   private async createRDPSession(
     sessionId: string,
     options: SessionOptions
   ): Promise<string> {
-    if (!options.rdpOptions) {
-      throw new Error('RDP options are required for RDP session');
-    }
-
-    try {
-      this.logger.info(`Creating RDP session ${sessionId}`, {
-        host: options.rdpOptions.host,
-        port: options.rdpOptions.port,
-        username: options.rdpOptions.username,
-      });
-
-      // Create RDP session through the protocol
-      const rdpSession = await this.rdpProtocol.createSession({
-        command: 'rdp',
-        ...options.rdpOptions,
-      });
-
-      // Update console session
-      const session = this.sessions.get(sessionId);
-      if (session) {
-        session.status = 'running';
-        session.pid = undefined; // RDP sessions don't have PIDs
-        this.sessions.set(sessionId, session);
-      }
-
-      // Register with session manager
-      await this.sessionManager.updateSessionStatus(sessionId, 'running', {
-        rdpHost: options.rdpOptions.host,
-        rdpPort: options.rdpOptions.port,
-        protocol: options.rdpOptions.protocol,
-      });
-
-      this.logger.info(`RDP session ${sessionId} created successfully`);
-      return sessionId;
-    } catch (error) {
-      this.logger.error(`Failed to create RDP session ${sessionId}:`, error);
-
-      // Update session status to failed
-      const session = this.sessions.get(sessionId);
-      if (session) {
-        session.status = 'crashed';
-        this.sessions.set(sessionId, session);
-      }
-
-      throw error;
-    }
+    return this.rdpSessionManager.createSession(sessionId, options);
   }
 
   /**
@@ -7135,41 +7023,25 @@ export class ConsoleManager
   }
 
   /**
-   * Send input to RDP session
+   * Send input to RDP session — delegates to RDPSessionManager
    */
   async sendRDPInput(sessionId: string, input: string): Promise<void> {
-    try {
-      await this.rdpProtocol.sendInput(sessionId, input);
-    } catch (error) {
-      this.logger.error(
-        `Failed to send input to RDP session ${sessionId}:`,
-        error
-      );
-      throw error;
-    }
+    return this.rdpSessionManager.sendInput(sessionId, input);
   }
 
   /**
-   * Send clipboard data to RDP session
+   * Send clipboard data to RDP session — delegates to RDPSessionManager
    */
   async sendRDPClipboardData(
     sessionId: string,
     data: string,
     format: string = 'text'
   ): Promise<void> {
-    try {
-      await this.rdpProtocol.sendClipboardData(sessionId, data, format);
-    } catch (error) {
-      this.logger.error(
-        `Failed to send clipboard data to RDP session ${sessionId}:`,
-        error
-      );
-      throw error;
-    }
+    return this.rdpSessionManager.sendClipboardData(sessionId, data, format);
   }
 
   /**
-   * Start file transfer in RDP session
+   * Start file transfer in RDP session — delegates to RDPSessionManager
    */
   async startRDPFileTransfer(
     sessionId: string,
@@ -7177,50 +7049,33 @@ export class ConsoleManager
     remotePath: string,
     direction: 'upload' | 'download'
   ): Promise<string> {
-    try {
-      return await this.rdpProtocol.startFileTransfer(
-        sessionId,
-        localPath,
-        remotePath,
-        direction
-      );
-    } catch (error) {
-      this.logger.error(
-        `Failed to start file transfer in RDP session ${sessionId}:`,
-        error
-      );
-      throw error;
-    }
+    return this.rdpSessionManager.startFileTransfer(
+      sessionId,
+      localPath,
+      remotePath,
+      direction
+    );
   }
 
   /**
-   * Get RDP session information
+   * Get RDP session information — delegates to RDPSessionManager
    */
   getRDPSession(sessionId: string): RDPSession | undefined {
-    return this.rdpSessions.get(sessionId);
+    return this.rdpSessionManager.getSession(sessionId);
   }
 
   /**
-   * Get RDP protocol capabilities
+   * Get RDP protocol capabilities — delegates to RDPSessionManager
    */
-  getRDPCapabilities(): unknown {
-    return this.rdpProtocol.getCapabilities();
+  getRDPCapabilities(): Promise<unknown> {
+    return this.rdpSessionManager.getCapabilities();
   }
 
   /**
-   * Disconnect RDP session
+   * Disconnect RDP session — delegates to RDPSessionManager
    */
   async disconnectRDPSession(sessionId: string): Promise<void> {
-    try {
-      await this.rdpProtocol.disconnectSession(sessionId);
-      this.rdpSessions.delete(sessionId);
-    } catch (error) {
-      this.logger.error(
-        `Failed to disconnect RDP session ${sessionId}:`,
-        error
-      );
-      throw error;
-    }
+    return this.rdpSessionManager.disconnectSession(sessionId);
   }
 
   // SFTP/SCP Protocol Methods
