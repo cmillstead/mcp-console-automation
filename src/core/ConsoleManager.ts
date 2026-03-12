@@ -82,7 +82,6 @@ import {
   ConnectionProfile,
   ApplicationProfile,
 } from '../config/ConfigManager.js';
-import { DockerProtocol } from '../protocols/DockerProtocol.js';
 import { NetworkMetricsManager } from './NetworkMetricsManager.js';
 import {
   SessionPersistenceManager,
@@ -131,7 +130,6 @@ export class ConsoleManager
   // New production-ready connection pooling and session management
   private connectionPool: ConnectionPool;
   private sessionManager: SessionManager;
-  private dockerProtocol: DockerProtocol;
   private retryManager: RetryManager;
   private diagnosticsManager: DiagnosticsManager;
   private sessionValidator: SessionValidator;
@@ -356,70 +354,6 @@ export class ConsoleManager
     });
 
     this.sessionManager = new SessionManager(config?.sessionManager);
-
-    // Initialize Docker protocol with default configuration
-    this.dockerProtocol = new DockerProtocol({
-      connection: {
-        // Auto-detect Docker socket/host based on platform
-        socketPath:
-          process.platform === 'win32'
-            ? '\\\\.\\pipe\\docker_engine'
-            : '/var/run/docker.sock',
-      },
-      containerDefaults: {
-        attachStdin: true,
-        attachStdout: true,
-        attachStderr: true,
-        tty: true,
-        openStdin: true,
-        stdinOnce: false,
-        hostConfig: {
-          autoRemove: true,
-        },
-      },
-      execDefaults: {
-        attachStdin: true,
-        attachStdout: true,
-        attachStderr: true,
-        tty: true,
-      },
-      healthCheck: {
-        enabled: true,
-        interval: 30000,
-        timeout: 5000,
-        retries: 3,
-        startPeriod: 10000,
-      },
-      autoCleanup: true,
-      logStreaming: {
-        enabled: true,
-        bufferSize: 8192,
-        maxLines: 1000,
-        timestamps: true,
-      },
-      networking: {
-        createNetworks: false,
-        allowPrivileged: false,
-      },
-      security: {
-        allowPrivileged: false,
-        allowHostNetwork: false,
-        allowHostPid: false,
-        restrictedCapabilities: ['SYS_ADMIN', 'NET_ADMIN', 'SYS_MODULE'],
-      },
-      performance: {
-        connectionPoolSize: 10,
-        requestTimeout: 30000,
-        keepAliveTimeout: 60000,
-        maxConcurrentOperations: 50,
-      },
-      monitoring: {
-        enableMetrics: true,
-        enableTracing: false,
-        enableHealthChecks: true,
-        alertOnFailures: true,
-      },
-    });
 
     // Initialize diagnostics and validation
     this.diagnosticsManager = DiagnosticsManager.getInstance({
@@ -7792,7 +7726,6 @@ export class ConsoleManager
 
     // Clean up legacy protocol instances
     const legacyProtocols: Array<{ name: string; instance: any }> = [
-      { name: 'docker', instance: this.dockerProtocol },
       { name: 'kubernetes', instance: this.kubernetesProtocol },
       { name: 'aws-ssm', instance: this.awsSSMProtocol },
       { name: 'azure', instance: this.azureProtocol },
