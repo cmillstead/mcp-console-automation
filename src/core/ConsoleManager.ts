@@ -15,14 +15,14 @@ import {
   ExtendedErrorPattern,
   CommandExecution,
   AzureConnectionOptions,
-  AzureTokenInfo,
+  // AzureTokenInfo — removed, now used only in AzureSessionManager
   SerialConnectionOptions,
   WSLConnectionOptions,
   WSLSession,
   SFTPSessionOptions,
   FileTransferSession,
   SFTPTransferOptions,
-  AWSSSMConnectionOptions,
+  // AWSSSMConnectionOptions — removed, now used only in AWSSSMSessionManager
   RDPConnectionOptions,
   RDPSession,
   WinRMConnectionOptions,
@@ -31,8 +31,6 @@ import {
   VNCSession,
   VNCFramebuffer,
   VNCSecurityType,
-  WebSocketTerminalConnectionOptions,
-  WebSocketTerminalSessionState,
   IPCSessionState,
   IPMISessionState,
   AnsibleConnectionOptions,
@@ -76,13 +74,12 @@ import {
   IProtocol,
   ProtocolDetector,
 } from './ProtocolFactory.js';
-import { AzureMonitoring } from '../monitoring/AzureMonitoring.js';
+// AzureMonitoring import removed — now owned by AzureSessionManager
 import {
   ConfigManager,
   ConnectionProfile,
   ApplicationProfile,
 } from '../config/ConfigManager.js';
-import { DockerProtocol } from '../protocols/DockerProtocol.js';
 import { NetworkMetricsManager } from './NetworkMetricsManager.js';
 import {
   SessionPersistenceManager,
@@ -95,6 +92,23 @@ import {
   TimeoutRecoveryResult,
   CommandQueueConfig,
 } from './CommandQueueManager.js';
+import {
+  TimeoutRecoveryManager,
+  TimeoutRecoveryHost,
+} from './TimeoutRecoveryManager.js';
+import { SerialSessionManager } from './SerialSessionManager.js';
+import { ProtocolSessionHost } from './ProtocolSessionManagerBase.js';
+import {
+  WebSocketTerminalSessionManager,
+  WebSocketTerminalSessionHost,
+} from './WebSocketTerminalSessionManager.js';
+import { AzureSessionManager } from './AzureSessionManager.js';
+import {
+  AWSSSMSessionManager,
+  AWSSSMSessionHost,
+} from './AWSSSMSessionManager.js';
+import { KubernetesSessionManager } from './KubernetesSessionManager.js';
+import { RDPSessionManager } from './RDPSessionManager.js';
 // JobManager functionality integrated into SessionManager
 import PQueue from 'p-queue';
 import { platform } from 'os';
@@ -131,7 +145,6 @@ export class ConsoleManager
   // New production-ready connection pooling and session management
   private connectionPool: ConnectionPool;
   private sessionManager: SessionManager;
-  private dockerProtocol: DockerProtocol;
   private retryManager: RetryManager;
   private diagnosticsManager: DiagnosticsManager;
   private sessionValidator: SessionValidator;
@@ -139,6 +152,22 @@ export class ConsoleManager
 
   // Self-healing and health monitoring — owned by HealthOrchestrator
   private healthOrchestrator!: HealthOrchestrator;
+
+  // Timeout recovery — owned by TimeoutRecoveryManager
+  private timeoutRecoveryManager!: TimeoutRecoveryManager;
+
+  // Serial session management — owned by SerialSessionManager
+  private serialSessionManager!: SerialSessionManager;
+  // WebSocket terminal session management — owned by WebSocketTerminalSessionManager
+  private wsTerminalSessionManager!: WebSocketTerminalSessionManager;
+  // Azure session management — owned by AzureSessionManager
+  private azureSessionManager!: AzureSessionManager;
+  // AWS SSM session management — owned by AWSSSMSessionManager
+  private awsSSMSessionManager!: AWSSSMSessionManager;
+  // Kubernetes session management — owned by KubernetesSessionManager
+  private kubernetesSessionManager!: KubernetesSessionManager;
+  // RDP session management — owned by RDPSessionManager
+  private rdpSessionManager!: RDPSessionManager;
 
   // Convenience getters for sub-components (backwards compat within ConsoleManager)
   private get healthMonitor(): HealthMonitor {
@@ -166,8 +195,7 @@ export class ConsoleManager
   >;
   private protocolSessionIdMap: Map<string, string>; // Maps ConsoleManager sessionId to protocol sessionId
 
-  // Azure monitoring support (kept separate as it's not a protocol)
-  private azureMonitoring: AzureMonitoring;
+  // azureMonitoring — removed, now owned by AzureSessionManager
 
   // Protocol cache for factory-created instances
   private protocolCache: Map<string, IProtocol> = new Map();
@@ -177,17 +205,16 @@ export class ConsoleManager
   private vncProtocols: Map<string, any>;
   private ipcProtocols: Map<string, any>;
   private ipmiProtocols: Map<string, any>;
-  private kubernetesProtocol?: any;
-  private serialProtocol?: any;
-  private awsSSMProtocol?: any;
-  private azureProtocol?: any;
-  private webSocketTerminalProtocol?: any;
-  private rdpProtocol?: any;
+  // kubernetesProtocol — removed, now managed by KubernetesSessionManager
+  // awsSSMProtocol — removed, now managed by AWSSSMSessionManager
+  // azureProtocol — removed, now managed by AzureSessionManager
+  // webSocketTerminalProtocol — removed, now managed by WebSocketTerminalSessionManager
+  // rdpProtocol — removed, now managed by RDPSessionManager
   private wslProtocol?: any;
   private ansibleProtocol?: any;
 
   // Legacy session tracking (to be migrated)
-  private rdpSessions: Map<string, RDPSession>;
+  // rdpSessions — removed, now managed by RDPSessionManager
   private winrmSessions: Map<string, WinRMSessionState>;
   private vncSessions: Map<string, VNCSession>;
   private vncFramebuffers: Map<string, VNCFramebuffer>;
@@ -200,7 +227,7 @@ export class ConsoleManager
     string,
     NodeJS.Timeout | NodeJS.Timeout[]
   >;
-  private webSocketTerminalSessions: Map<string, WebSocketTerminalSessionState>;
+  // webSocketTerminalSessions — removed, now managed by WebSocketTerminalSessionManager
   private ansibleSessions: Map<
     string,
     import('../types/index.js').AnsibleSession
@@ -209,71 +236,7 @@ export class ConsoleManager
   // Self-healing state
   private selfHealingEnabled = true;
 
-  // Timeout recovery tracking
-  private timeoutRecoveryAttempts: Map<string, number> = new Map();
-  private readonly maxTimeoutRecoveryAttempts = 3;
-
-  // Recovery success rate monitoring
-  private recoveryMetrics = {
-    totalRecoveryAttempts: 0,
-    successfulRecoveries: 0,
-    failedRecoveries: 0,
-    averageRecoveryTimeMs: 0,
-    recoverySuccessRateByCategory: new Map<
-      string,
-      { attempts: number; successes: number }
-    >(),
-    lastRecoveryTimestamp: 0,
-    recoveryAttemptHistory: [] as Array<{
-      timestamp: number;
-      sessionId: string;
-      category: string;
-      success: boolean;
-      durationMs: number;
-      error?: string;
-    }>,
-  };
-
-  // Timeout-specific error patterns for enhanced classification
-  private static readonly TIMEOUT_ERROR_PATTERNS = {
-    command_acknowledgment: [
-      /command acknowledgment timeout/i,
-      /acknowledgment timeout/i,
-      /waiting for command response/i,
-      /command response timeout/i,
-    ],
-    ssh_connection: [
-      /ssh connection timeout/i,
-      /connection timed out/i,
-      /handshake timeout/i,
-      /authentication timeout/i,
-      /ssh timeout/i,
-    ],
-    network_latency: [
-      /network latency/i,
-      /high latency detected/i,
-      /slow network/i,
-      /network congestion/i,
-    ],
-    ssh_responsiveness: [
-      /ssh session unresponsive/i,
-      /channel unresponsive/i,
-      /responsiveness test failed/i,
-      /ssh not responding/i,
-    ],
-    command_execution: [
-      /command execution timeout/i,
-      /execution timed out/i,
-      /command took too long/i,
-      /long running command timeout/i,
-    ],
-    recovery_timeout: [
-      /recovery timeout/i,
-      /timeout recovery failed/i,
-      /recovery attempt timeout/i,
-      /max recovery attempts/i,
-    ],
-  };
+  // Timeout recovery tracking — owned by TimeoutRecoveryManager
 
   // Enhanced session persistence and continuity
   private persistenceManager!: SessionPersistenceManager;
@@ -297,7 +260,6 @@ export class ConsoleManager
     this.fileTransferSessions = new Map();
     this.outputBuffers = new Map();
     this.streamManagers = new Map();
-    this.rdpSessions = new Map();
     this.sessionHealthCheckIntervals = new Map();
 
     // Legacy session tracking (to be fully migrated)
@@ -311,8 +273,6 @@ export class ConsoleManager
     this.ipmiProtocols = new Map();
     this.ipmiSessions = new Map();
     this.ipmiMonitoringIntervals = new Map();
-    this.webSocketTerminalSessions = new Map();
-
     this.errorDetector = new ErrorDetector();
     this.outputFilterEngine = new OutputFilterEngine();
     this.paginationManager = new OutputPaginationManager({
@@ -357,70 +317,6 @@ export class ConsoleManager
 
     this.sessionManager = new SessionManager(config?.sessionManager);
 
-    // Initialize Docker protocol with default configuration
-    this.dockerProtocol = new DockerProtocol({
-      connection: {
-        // Auto-detect Docker socket/host based on platform
-        socketPath:
-          process.platform === 'win32'
-            ? '\\\\.\\pipe\\docker_engine'
-            : '/var/run/docker.sock',
-      },
-      containerDefaults: {
-        attachStdin: true,
-        attachStdout: true,
-        attachStderr: true,
-        tty: true,
-        openStdin: true,
-        stdinOnce: false,
-        hostConfig: {
-          autoRemove: true,
-        },
-      },
-      execDefaults: {
-        attachStdin: true,
-        attachStdout: true,
-        attachStderr: true,
-        tty: true,
-      },
-      healthCheck: {
-        enabled: true,
-        interval: 30000,
-        timeout: 5000,
-        retries: 3,
-        startPeriod: 10000,
-      },
-      autoCleanup: true,
-      logStreaming: {
-        enabled: true,
-        bufferSize: 8192,
-        maxLines: 1000,
-        timestamps: true,
-      },
-      networking: {
-        createNetworks: false,
-        allowPrivileged: false,
-      },
-      security: {
-        allowPrivileged: false,
-        allowHostNetwork: false,
-        allowHostPid: false,
-        restrictedCapabilities: ['SYS_ADMIN', 'NET_ADMIN', 'SYS_MODULE'],
-      },
-      performance: {
-        connectionPoolSize: 10,
-        requestTimeout: 30000,
-        keepAliveTimeout: 60000,
-        maxConcurrentOperations: 50,
-      },
-      monitoring: {
-        enableMetrics: true,
-        enableTracing: false,
-        enableHealthChecks: true,
-        alertOnFailures: true,
-      },
-    });
-
     // Initialize diagnostics and validation
     this.diagnosticsManager = DiagnosticsManager.getInstance({
       enableDiagnostics: true,
@@ -453,6 +349,48 @@ export class ConsoleManager
       this.errorRecovery
     );
 
+    // Initialize timeout recovery manager
+    this.timeoutRecoveryManager = new TimeoutRecoveryManager(
+      this.buildTimeoutRecoveryHost(),
+      this.logger
+    );
+
+    // Initialize serial session manager
+    this.serialSessionManager = new SerialSessionManager(
+      this.buildProtocolSessionHost(),
+      this.logger
+    );
+
+    // Initialize WebSocket terminal session manager
+    this.wsTerminalSessionManager = new WebSocketTerminalSessionManager(
+      this.buildWebSocketTerminalSessionHost(),
+      this.logger
+    );
+
+    // Initialize Azure session manager
+    this.azureSessionManager = new AzureSessionManager(
+      this.buildProtocolSessionHost(),
+      this.logger
+    );
+
+    // Initialize AWS SSM session manager
+    this.awsSSMSessionManager = new AWSSSMSessionManager(
+      this.buildAWSSSMSessionHost(),
+      this.logger
+    );
+
+    // Initialize Kubernetes session manager
+    this.kubernetesSessionManager = new KubernetesSessionManager(
+      this.buildProtocolSessionHost(),
+      this.logger
+    );
+
+    // Initialize RDP session manager
+    this.rdpSessionManager = new RDPSessionManager(
+      this.buildProtocolSessionHost(),
+      this.logger
+    );
+
     // Setup event listeners for integration
     this.setupPoolingIntegration();
     this.setupErrorRecoveryHandlers();
@@ -470,8 +408,7 @@ export class ConsoleManager
     this.protocolSessions = new Map();
     this.protocolSessionIdMap = new Map();
 
-    // Initialize Azure monitoring (not a protocol)
-    this.azureMonitoring = new AzureMonitoring(this.logger.getWinstonLogger());
+    // azureMonitoring init removed — now owned by AzureSessionManager
 
     // Setup protocol integrations will be handled on-demand
   }
@@ -1055,6 +992,113 @@ export class ConsoleManager
     };
   }
 
+  private buildTimeoutRecoveryHost(): TimeoutRecoveryHost {
+    return {
+      getSSHClient: (sessionId: string) => this.sshClients.get(sessionId),
+      getSSHChannel: (sessionId: string) => this.sshChannels.get(sessionId),
+      attemptSSHReconnection: (sessionId: string) =>
+        this.attemptSSHReconnection(sessionId),
+      sendInput: (sessionId: string, input: string) =>
+        this.sendInput(sessionId, input),
+      getSession: (sessionId: string) => this.sessions.get(sessionId),
+      getOutputBuffer: (sessionId: string) =>
+        this.outputBuffers.get(sessionId) || [],
+      setOutputBuffer: (sessionId: string, buffer: any[]) =>
+        this.outputBuffers.set(sessionId, buffer),
+      getSessionRecovery: () => this.sessionRecovery,
+      getPersistenceManager: () => this.persistenceManager,
+      getCommandQueueManager: () => this.commandQueueManager,
+      emitEvent: (event: string, data: any) => this.emit(event, data),
+      isSelfHealingEnabled: () => this.selfHealingEnabled,
+      delay: (ms: number) => this.delay(ms),
+      createSessionBookmark: (sessionId: string, reason: string) =>
+        this.createSessionBookmark(sessionId, reason),
+      getRetryManager: () => this.retryManager,
+      getErrorRecovery: () => this.errorRecovery,
+    };
+  }
+
+  /**
+   * Build the shared ProtocolSessionHost interface for protocol session managers.
+   * Reused by SerialSessionManager and future protocol session managers.
+   */
+  private buildProtocolSessionHost(): ProtocolSessionHost {
+    return {
+      getSession: (id: string) => this.sessions.get(id),
+      setSession: (id: string, s: any) => this.sessions.set(id, s),
+      deleteSession: (id: string) => this.sessions.delete(id),
+      getOutputBuffer: (id: string) => this.outputBuffers.get(id) || [],
+      setOutputBuffer: (id: string, buf: ConsoleOutput[]) =>
+        this.outputBuffers.set(id, buf),
+      getMaxBufferSize: () => this.maxBufferSize,
+      createStreamManager: (id: string, opts: any) => new StreamManager(id, opts),
+      setStreamManager: (id: string, sm: StreamManager) =>
+        this.streamManagers.set(id, sm),
+      getStreamManager: (id: string) => this.streamManagers.get(id),
+      deleteStreamManager: (id: string) => this.streamManagers.delete(id),
+      updateSessionStatus: async (id: string, status: string, meta?: Record<string, unknown>) => {
+        await this.sessionManager.updateSessionStatus(
+          id,
+          status as 'running' | 'stopped' | 'terminated' | 'failed' | 'paused' | 'initializing' | 'recovering',
+          meta
+        );
+      },
+      registerSessionWithHealthMonitoring: (id, session, opts) =>
+        this.registerSessionWithHealthMonitoring(id, session, opts),
+      emitEvent: (event: any) => this.emitEvent(event),
+      emitTypedEvent: (name: string, data: any) => this.emit(name, data),
+      getProtocolFactory: () => this.protocolFactory,
+      getOrCreateProtocol: async (type: string) =>
+        this.getOrCreateProtocol(type as any),
+      getErrorDetector: () => this.errorDetector,
+      addErrorPatterns: (patterns: any[]) =>
+        this.errorDetector?.addPatterns?.(patterns),
+      getPromptDetector: () => this.promptDetector,
+      getPaginationManager: () => this.paginationManager,
+      isSelfHealingEnabled: () => this.selfHealingEnabled,
+      getNextSequenceNumber: (_id: string) => {
+        // Sequence numbering is not currently tracked per-session in ConsoleManager;
+        // return 0 as a placeholder (protocol managers that need sequencing
+        // should maintain their own counters).
+        return 0;
+      },
+      getLogger: () => this.logger,
+    };
+  }
+
+  /**
+   * Build a WebSocketTerminalSessionHost — extends ProtocolSessionHost with updateSessionActivity.
+   */
+  private buildWebSocketTerminalSessionHost(): WebSocketTerminalSessionHost {
+    return {
+      ...this.buildProtocolSessionHost(),
+      updateSessionActivity: (id: string, metadata?: Record<string, unknown>) =>
+        this.sessionManager.updateSessionActivity(id, metadata),
+    };
+  }
+
+  /**
+   * Build an AWSSSMSessionHost — extends ProtocolSessionHost with SSM-specific methods.
+   */
+  private buildAWSSSMSessionHost(): AWSSSMSessionHost {
+    return {
+      ...this.buildProtocolSessionHost(),
+      findSessionBySSMId: (ssmSessionId: string) =>
+        Array.from(this.sessions.values()).find(
+          (s) => s.awsSSMSessionId === ssmSessionId
+        ),
+      addToHeartbeatMonitor: (sessionId: string, info: any) => {
+        if (this.heartbeatMonitor) {
+          this.heartbeatMonitor.addSession(sessionId, info);
+        }
+      },
+      addHealthCheckInterval: (sessionId: string, interval: ReturnType<typeof setInterval>) => {
+        this.sessionHealthCheckIntervals = this.sessionHealthCheckIntervals || new Map();
+        this.sessionHealthCheckIntervals.set(sessionId, interval);
+      },
+    };
+  }
+
   // initializeSelfHealingComponents() — removed, now in HealthOrchestrator.initializeComponents()
 
   // setupSelfHealingIntegration() — removed, now in HealthOrchestrator.setupEventWiring()
@@ -1101,403 +1145,16 @@ export class ConsoleManager
   }
 
   /**
-   * Enhanced timeout recovery for SSH sessions with session persistence and state restoration
+   * Enhanced timeout recovery for SSH sessions — delegated to TimeoutRecoveryManager
    */
   async attemptTimeoutRecovery(
     sessionId: string,
     command: QueuedCommand
   ): Promise<TimeoutRecoveryResult> {
-    const recoveryStartTime = Date.now();
-    const currentAttempts = this.timeoutRecoveryAttempts.get(sessionId) || 0;
-
-    // Create timeout error for enhanced classification
-    const timeoutError = new Error(
-      `SSH command acknowledgment timeout after ${Date.now() - command.timestamp.getTime()}ms`
-    );
-    const timeoutClassification = this.classifyTimeoutError(timeoutError);
-
-    // Update persistent data with recovery attempt
-    const persistentData = this.persistenceManager.getPersistenceData(sessionId);
-    if (persistentData) {
-      persistentData.recoveryMetadata.timeoutRecoveryAttempts =
-        currentAttempts + 1;
-      persistentData.recoveryMetadata.lastRecoveryTime = new Date();
-      persistentData.connectionState.lastError = 'timeout';
-    }
-
-    // Create recovery bookmark before attempting recovery
-    await this.createSessionBookmark(sessionId, 'timeout-recovery');
-
-    if (currentAttempts >= this.maxTimeoutRecoveryAttempts) {
-      this.logger.warn(
-        `Max timeout recovery attempts reached for session ${sessionId}`
-      );
-
-      // Check if this is an interactive prompt timeout that needs specialized recovery
-      const shouldTriggerInteractive =
-        this.sessionRecovery.shouldTriggerInteractiveRecovery(sessionId);
-      if (shouldTriggerInteractive.shouldTrigger) {
-        this.logger.info(
-          `Triggering interactive prompt recovery for session ${sessionId}: ${shouldTriggerInteractive.reason}`
-        );
-
-        // Update interactive state with timeout information
-        await this.sessionRecovery.updateInteractiveState(sessionId, {
-          sessionUnresponsive: true,
-          timeoutCount: currentAttempts,
-          pendingCommands: [command.input],
-          isInteractive: true,
-        });
-
-        // Attempt interactive prompt recovery
-        const interactiveRecovery = await this.sessionRecovery.recoverSession(
-          sessionId,
-          `interactive-prompt-timeout-${shouldTriggerInteractive.urgency}`
-        );
-
-        if (interactiveRecovery) {
-          this.logger.info(
-            `Interactive prompt recovery succeeded for session ${sessionId}`
-          );
-          return { success: true, reconnected: false };
-        }
-      }
-
-      // Classify this as a permanent timeout failure for error recovery system
-      const errorContext = {
-        sessionId,
-        operation: 'timeout_recovery',
-        error: new Error('Max timeout recovery attempts exceeded'),
-        timestamp: Date.now(),
-        metadata: {
-          attempts: currentAttempts,
-          commandInput: command.input.substring(0, 100),
-          interactivePromptDetected: shouldTriggerInteractive.shouldTrigger,
-        },
-      };
-
-      // Attempt graceful degradation through error recovery system
-      const classification = this.errorRecovery.classifyError(
-        errorContext.error
-      );
-      if (classification?.recoverable) {
-        this.logger.info(
-          `Error recovery system suggests timeout is recoverable, trying fallback strategy`
-        );
-        const recoveryResult =
-          await this.errorRecovery.attemptRecovery(errorContext);
-        if (recoveryResult) {
-          return { success: true, error: 'Recovered via fallback strategy' };
-        }
-      }
-
-      // Record failed recovery attempt in metrics
-      const recoveryDuration = Date.now() - recoveryStartTime;
-      this.recordRecoveryAttempt(
-        sessionId,
-        timeoutClassification.category,
-        false,
-        recoveryDuration,
-        'Max recovery attempts exceeded'
-      );
-
-      return { success: false, error: 'Max recovery attempts exceeded' };
-    }
-
-    this.timeoutRecoveryAttempts.set(sessionId, currentAttempts + 1);
-    this.logger.info(
-      `Attempting timeout recovery for session ${sessionId} (attempt ${currentAttempts + 1})`
-    );
-
-    // Create error context for integration with error recovery system
-    const recoveryContext = {
-      sessionId,
-      operation: 'ssh_timeout_recovery',
-      error: new Error('SSH timeout recovery attempt'),
-      timestamp: Date.now(),
-      metadata: {
-        attemptNumber: currentAttempts + 1,
-        maxAttempts: this.maxTimeoutRecoveryAttempts,
-        commandInput: command.input.substring(0, 100),
-        commandRetryCount: command.retryCount,
-      },
-      previousAttempts: currentAttempts,
-    };
-
-    try {
-      // Step 1: Classify the timeout error to determine optimal recovery strategy
-      const timeoutError = new Error(
-        `SSH command acknowledgment timeout after ${Date.now() - command.timestamp.getTime()}ms`
-      );
-      const errorClassification =
-        this.errorRecovery.classifyError(timeoutError);
-
-      this.logger.info(
-        `Timeout classified as: ${errorClassification?.type || 'unknown'} (severity: ${errorClassification?.severity || 'medium'})`
-      );
-
-      // Step 2: Check circuit breaker state before attempting recovery
-      const circuitKey = `ssh_timeout_${sessionId}`;
-      const circuitState =
-        this.retryManager.getCircuitBreakerStates()[circuitKey];
-
-      if (circuitState?.state === 'open') {
-        this.logger.warn(
-          `Circuit breaker is open for SSH timeout recovery on session ${sessionId}`
-        );
-
-        // Wait for circuit breaker cooldown or try alternative recovery
-        const now = Date.now();
-        if (now < circuitState.nextAttemptTime) {
-          const waitTime = circuitState.nextAttemptTime - now;
-          this.logger.info(
-            `Waiting ${waitTime}ms for circuit breaker cooldown`
-          );
-          await this.delay(Math.min(waitTime, 5000)); // Max 5 second wait
-        }
-      }
-
-      // Step 3: Check if SSH connection is still alive
-      const sshClient = this.sshClients.get(sessionId);
-      const sshChannel = this.sshChannels.get(sessionId);
-
-      if (!sshClient || !sshChannel) {
-        this.logger.warn(
-          `SSH client or channel missing for session ${sessionId}, attempting reconnection`
-        );
-
-        // Use retry manager for reconnection attempts
-        return await this.retryManager.executeWithRetry(
-          async () => await this.attemptSSHReconnection(sessionId),
-          {
-            sessionId,
-            operationName: 'ssh_reconnection',
-            strategyName: 'ssh',
-            onRetry: (context) => {
-              this.logger.info(
-                `Retrying SSH reconnection for ${sessionId} (attempt ${context.attemptNumber})`
-              );
-            },
-          }
-        );
-      }
-
-      // Step 4: Enhanced connection responsiveness test with multiple fallbacks
-      const testResult = await this.testSSHResponsiveness(
-        sessionId,
-        sshChannel
-      );
-      if (!testResult.responsive) {
-        this.logger.warn(
-          `SSH session ${sessionId} unresponsive, attempting reconnection`
-        );
-
-        // Circuit breaker will be handled by the retry operation itself
-
-        return await this.retryManager.executeWithRetry(
-          async () => await this.attemptSSHReconnection(sessionId),
-          {
-            sessionId,
-            operationName: 'ssh_reconnection_after_timeout',
-            strategyName: 'ssh',
-            onRetry: (context) => {
-              this.logger.info(
-                `Retrying SSH reconnection after timeout for ${sessionId} (attempt ${context.attemptNumber})`
-              );
-            },
-          }
-        );
-      }
-
-      // Step 5: Clear any stale output and reset acknowledgment state
-      await this.clearStaleOutput(sessionId);
-
-      // Step 6: Reset command state for retry with exponential backoff
-      command.acknowledged = false;
-      command.sent = false;
-      command.retryCount = (command.retryCount || 0) + 1;
-
-      // Apply exponential backoff based on retry count
-      const backoffDelay = Math.min(
-        1000 * Math.pow(2, command.retryCount - 1),
-        8000
-      );
-      if (backoffDelay > 0) {
-        this.logger.info(
-          `Applying ${backoffDelay}ms backoff before command retry`
-        );
-        await this.delay(backoffDelay);
-      }
-
-      // Step 7: Test with a simple command to ensure the session is truly responsive
-      const finalValidation = await this.validateSessionRecovery(
-        sessionId,
-        sshChannel
-      );
-      if (!finalValidation.valid) {
-        this.logger.warn(
-          `Session validation failed after recovery attempt: ${finalValidation.error}`
-        );
-        return { success: false, error: finalValidation.error };
-      }
-
-      // Success is automatically recorded by the retry manager
-
-      // Step 8: Restore session state from latest bookmark if available
-      await this.persistenceManager.restoreSessionStateFromBookmark(sessionId);
-
-      // Step 9: Update persistent data with successful recovery
-      if (persistentData) {
-        persistentData.connectionState.isConnected = true;
-        persistentData.connectionState.lastConnectionTime = new Date();
-        persistentData.recoveryMetadata.recoveryStrategiesUsed.push(
-          'timeout-recovery-success'
-        );
-        persistentData.lastActivity = new Date();
-      }
-
-      // Reset recovery attempts on successful recovery
-      this.timeoutRecoveryAttempts.delete(sessionId);
-
-      // Record successful recovery attempt in metrics
-      const recoveryDuration = Date.now() - recoveryStartTime;
-      this.recordRecoveryAttempt(
-        sessionId,
-        timeoutClassification.category,
-        true,
-        recoveryDuration
-      );
-
-      this.logger.info(
-        `Successfully recovered SSH session ${sessionId} with state restoration and ${command.retryCount} retries`
-      );
-      return {
-        success: true,
-        restoredCommands: this.commandQueueManager.restoreCommandQueueFromPersistence(sessionId),
-        metadata: {
-          retryCount: command.retryCount,
-          backoffDelay,
-          stateRestored: true,
-          recoveryDurationMs: recoveryDuration,
-        },
-      };
-    } catch (error) {
-      this.logger.error(
-        `Enhanced timeout recovery failed for session ${sessionId}:`,
-        error
-      );
-
-      // Update persistent data with failure
-      if (persistentData) {
-        persistentData.connectionState.isConnected = false;
-        persistentData.connectionState.lastError =
-          error instanceof Error ? error.message : String(error);
-        persistentData.recoveryMetadata.recoveryStrategiesUsed.push(
-          'timeout-recovery-failed'
-        );
-      }
-
-      // Circuit breaker failure will be handled by retry mechanism
-
-      // Update error context with actual error
-      recoveryContext.error = error as Error;
-
-      // Attempt error recovery as last resort
-      const errorRecoveryResult =
-        await this.errorRecovery.attemptRecovery(recoveryContext);
-      if (errorRecoveryResult) {
-        this.logger.info(
-          `Error recovery system provided fallback recovery for session ${sessionId}`
-        );
-        return { success: true, error: 'Recovered via error recovery system' };
-      }
-
-      // Record failed recovery attempt in metrics
-      const recoveryDuration = Date.now() - recoveryStartTime;
-      this.recordRecoveryAttempt(
-        sessionId,
-        timeoutClassification.category,
-        false,
-        recoveryDuration,
-        error instanceof Error ? error.message : String(error)
-      );
-
-      return {
-        success: false,
-        error: error instanceof Error ? error.message : String(error),
-      };
-    }
+    return this.timeoutRecoveryManager.attemptTimeoutRecovery(sessionId, command);
   }
 
-  /**
-   * Enhanced SSH reconnection with session persistence
-   */
-  private async attemptSSHReconnectionWithPersistence(
-    sessionId: string
-  ): Promise<TimeoutRecoveryResult> {
-    try {
-      this.logger.info(
-        `Attempting SSH reconnection with state persistence for session ${sessionId}`
-      );
-
-      // Save current command queue state
-      await this.createSessionBookmark(sessionId, 'pre-reconnection');
-
-      // Get original session info
-      const session = this.sessions.get(sessionId);
-      const persistentData = this.persistenceManager.getPersistenceData(sessionId);
-
-      if (!session || !session.sshOptions) {
-        return { success: false, error: 'Session or SSH options not found' };
-      }
-
-      // Update connection state
-      if (persistentData) {
-        persistentData.connectionState.isConnected = false;
-        persistentData.connectionState.connectionAttempts += 1;
-      }
-
-      // Clean up existing connection
-      await this.cleanupSSHSession(sessionId);
-
-      // Recreate SSH connection
-      const reconnectResult = await this.createSSHConnection(
-        sessionId,
-        session.sshOptions
-      );
-      if (reconnectResult.success) {
-        // Restore session state after reconnection
-        await this.persistenceManager.restoreSessionStateFromBookmark(sessionId);
-        const restoredCommands =
-          this.commandQueueManager.restoreCommandQueueFromPersistence(sessionId);
-
-        // Update connection state
-        if (persistentData) {
-          persistentData.connectionState.isConnected = true;
-          persistentData.connectionState.lastConnectionTime = new Date();
-          persistentData.recoveryMetadata.recoveryStrategiesUsed.push(
-            'ssh-reconnection-success'
-          );
-        }
-
-        this.logger.info(
-          `Successfully reconnected SSH session ${sessionId} with ${restoredCommands} restored commands`
-        );
-        return { success: true, reconnected: true, restoredCommands };
-      } else {
-        return { success: false, error: 'Reconnection failed' };
-      }
-    } catch (error) {
-      this.logger.error(
-        `SSH reconnection with persistence failed for session ${sessionId}:`,
-        error
-      );
-      return {
-        success: false,
-        error: error instanceof Error ? error.message : String(error),
-      };
-    }
-  }
+  // attemptSSHReconnectionWithPersistence — removed, was dead code
 
   /**
    * Setup integration with SessionRecovery system
@@ -1628,142 +1285,8 @@ export class ConsoleManager
   }
 
 
-  /**
-   * Test SSH connection responsiveness with enhanced fallback mechanisms
-   */
-  private async testSSHResponsiveness(
-    sessionId: string,
-    channel: ClientChannel
-  ): Promise<{ responsive: boolean; details?: string }> {
-    return new Promise((resolve) => {
-      const primaryTimeout = 2000;
-      const fallbackTimeout = 5000;
-      let responseReceived = false;
-      let testPhase = 'primary';
-
-      const cleanup = () => {
-        channel.removeListener('data', onData);
-        channel.removeListener('error', onError);
-        channel.removeListener('close', onClose);
-      };
-
-      // Primary timeout (2 seconds)
-      const primaryTimer = setTimeout(async () => {
-        if (!responseReceived) {
-          this.logger.warn(
-            `Primary responsiveness test failed for session ${sessionId}, trying fallback`
-          );
-          testPhase = 'fallback';
-
-          // Try a different command as fallback
-          try {
-            channel.write('\n'); // Just send a newline
-
-            // Extended timeout for fallback
-            setTimeout(() => {
-              if (!responseReceived) {
-                this.logger.warn(
-                  `Fallback responsiveness test also failed for session ${sessionId}`
-                );
-                cleanup();
-                resolve({
-                  responsive: false,
-                  details: 'Both primary and fallback tests failed',
-                });
-              }
-            }, fallbackTimeout - primaryTimeout);
-          } catch (error) {
-            this.logger.error(
-              `Error during fallback responsiveness test:`,
-              error
-            );
-            cleanup();
-            resolve({
-              responsive: false,
-              details: `Fallback test error: ${error}`,
-            });
-          }
-        }
-      }, primaryTimeout);
-
-      const onData = (data: Buffer) => {
-        if (!responseReceived) {
-          responseReceived = true;
-          clearTimeout(primaryTimer);
-          cleanup();
-
-          const dataStr = data.toString();
-          this.logger.debug(
-            `Responsiveness test ${testPhase} succeeded for session ${sessionId}: ${dataStr.substring(0, 50)}`
-          );
-          resolve({
-            responsive: true,
-            details: `${testPhase} test succeeded: ${dataStr.length} bytes received`,
-          });
-        }
-      };
-
-      const onError = (error: Error) => {
-        if (!responseReceived) {
-          responseReceived = true;
-          clearTimeout(primaryTimer);
-          cleanup();
-
-          this.logger.error(
-            `SSH channel error during responsiveness test for session ${sessionId}:`,
-            error
-          );
-          resolve({
-            responsive: false,
-            details: `Channel error: ${error.message}`,
-          });
-        }
-      };
-
-      const onClose = () => {
-        if (!responseReceived) {
-          responseReceived = true;
-          clearTimeout(primaryTimer);
-          cleanup();
-
-          this.logger.warn(
-            `SSH channel closed during responsiveness test for session ${sessionId}`
-          );
-          resolve({ responsive: false, details: 'Channel closed during test' });
-        }
-      };
-
-      // Set up event listeners
-      channel.on('data', onData);
-      channel.on('error', onError);
-      channel.on('close', onClose);
-
-      try {
-        // Send a simple echo command that should respond immediately
-        channel.write('echo "responsiveness-test-$(date +%s)"\n');
-      } catch (error) {
-        clearTimeout(primaryTimer);
-        cleanup();
-        resolve({ responsive: false, details: `Write error: ${error}` });
-      }
-    });
-  }
-
-  /**
-   * Clear stale output from buffers
-   */
-  private async clearStaleOutput(sessionId: string): Promise<void> {
-    // Clear command queue output buffer
-    this.commandQueueManager.clearQueueOutputBuffer(sessionId);
-
-    // Optional: Clear session output buffer if needed
-    const outputBuffer = this.outputBuffers.get(sessionId);
-    if (outputBuffer && outputBuffer.length > 50) {
-      // Keep only recent outputs
-      const recentOutputs = outputBuffer.slice(-10);
-      this.outputBuffers.set(sessionId, recentOutputs);
-    }
-  }
+  // testSSHResponsiveness — moved to TimeoutRecoveryManager
+  // clearStaleOutput — moved to TimeoutRecoveryManager
 
   /**
    * Utility method to add delay with promise
@@ -1772,205 +1295,16 @@ export class ConsoleManager
     return new Promise((resolve) => setTimeout(resolve, ms));
   }
 
-  /**
-   * Enhanced timeout error classification with specific timeout patterns
-   */
-  private classifyTimeoutError(error: Error): {
-    type: string;
-    severity: string;
-    category: string;
-    recoverable: boolean;
-  } {
-    const errorMsg = error.message.toLowerCase();
-
-    // Check for specific timeout patterns
-    for (const [category, patterns] of Object.entries(
-      ConsoleManager.TIMEOUT_ERROR_PATTERNS
-    )) {
-      for (const pattern of patterns) {
-        if (pattern.test(errorMsg)) {
-          const classification = this.determineTimeoutSeverity(
-            category,
-            errorMsg
-          );
-          return {
-            type: 'timeout',
-            severity: classification.severity,
-            category: `timeout_${category}`,
-            recoverable: classification.recoverable,
-          };
-        }
-      }
-    }
-
-    // Fallback to standard error recovery classification
-    const standardClassification = this.errorRecovery.classifyError(error);
-    return (
-      standardClassification || {
-        type: 'timeout',
-        severity: 'medium',
-        category: 'timeout_unknown',
-        recoverable: true,
-      }
-    );
-  }
+  // classifyTimeoutError — moved to TimeoutRecoveryManager
+  // determineTimeoutSeverity — moved to TimeoutRecoveryManager
+  // recordRecoveryAttempt — moved to TimeoutRecoveryManager
+  // logRecoveryMetrics — moved to TimeoutRecoveryManager
 
   /**
-   * Determine timeout severity and recoverability based on category
-   */
-  private determineTimeoutSeverity(
-    category: string,
-    errorMsg: string
-  ): { severity: string; recoverable: boolean } {
-    const severityMap = {
-      command_acknowledgment: { severity: 'medium', recoverable: true },
-      ssh_connection: { severity: 'high', recoverable: true },
-      network_latency: { severity: 'low', recoverable: true },
-      ssh_responsiveness: { severity: 'medium', recoverable: true },
-      command_execution: { severity: 'medium', recoverable: true },
-      recovery_timeout: { severity: 'high', recoverable: false },
-    };
-
-    // Check for critical indicators that make errors less recoverable
-    const criticalIndicators = [
-      'max attempts',
-      'circuit breaker',
-      'permanent failure',
-      'authentication failed',
-      'host unreachable',
-    ];
-
-    const isCritical = criticalIndicators.some((indicator) =>
-      errorMsg.includes(indicator)
-    );
-    const baseSeverity = severityMap[category as keyof typeof severityMap] || {
-      severity: 'medium',
-      recoverable: true,
-    };
-
-    return {
-      severity: isCritical ? 'critical' : baseSeverity.severity,
-      recoverable: isCritical ? false : baseSeverity.recoverable,
-    };
-  }
-
-  /**
-   * Record recovery attempt metrics
-   */
-  private recordRecoveryAttempt(
-    sessionId: string,
-    category: string,
-    success: boolean,
-    durationMs: number,
-    error?: string
-  ): void {
-    const timestamp = Date.now();
-
-    // Update overall metrics
-    this.recoveryMetrics.totalRecoveryAttempts++;
-    if (success) {
-      this.recoveryMetrics.successfulRecoveries++;
-    } else {
-      this.recoveryMetrics.failedRecoveries++;
-    }
-
-    // Update average recovery time
-    const totalDuration =
-      this.recoveryMetrics.averageRecoveryTimeMs *
-        (this.recoveryMetrics.totalRecoveryAttempts - 1) +
-      durationMs;
-    this.recoveryMetrics.averageRecoveryTimeMs =
-      totalDuration / this.recoveryMetrics.totalRecoveryAttempts;
-
-    // Update category-specific metrics
-    const categoryStats =
-      this.recoveryMetrics.recoverySuccessRateByCategory.get(category) || {
-        attempts: 0,
-        successes: 0,
-      };
-    categoryStats.attempts++;
-    if (success) {
-      categoryStats.successes++;
-    }
-    this.recoveryMetrics.recoverySuccessRateByCategory.set(
-      category,
-      categoryStats
-    );
-
-    // Add to history (keep only recent 100 attempts)
-    this.recoveryMetrics.recoveryAttemptHistory.push({
-      timestamp,
-      sessionId,
-      category,
-      success,
-      durationMs,
-      error,
-    });
-
-    if (this.recoveryMetrics.recoveryAttemptHistory.length > 100) {
-      this.recoveryMetrics.recoveryAttemptHistory.shift();
-    }
-
-    this.recoveryMetrics.lastRecoveryTimestamp = timestamp;
-
-    // Log metrics periodically
-    if (this.recoveryMetrics.totalRecoveryAttempts % 10 === 0) {
-      this.logRecoveryMetrics();
-    }
-  }
-
-  /**
-   * Get current recovery success rates and metrics
+   * Get current recovery success rates and metrics — delegated to TimeoutRecoveryManager
    */
   getTimeoutRecoveryMetrics() {
-    const successRate =
-      this.recoveryMetrics.totalRecoveryAttempts > 0
-        ? (this.recoveryMetrics.successfulRecoveries /
-            this.recoveryMetrics.totalRecoveryAttempts) *
-          100
-        : 0;
-
-    const categoryRates = new Map<string, number>();
-    for (const [category, stats] of Array.from(
-      this.recoveryMetrics.recoverySuccessRateByCategory
-    )) {
-      const rate =
-        stats.attempts > 0 ? (stats.successes / stats.attempts) * 100 : 0;
-      categoryRates.set(category, rate);
-    }
-
-    return {
-      overallSuccessRate: successRate,
-      totalAttempts: this.recoveryMetrics.totalRecoveryAttempts,
-      successfulRecoveries: this.recoveryMetrics.successfulRecoveries,
-      failedRecoveries: this.recoveryMetrics.failedRecoveries,
-      averageRecoveryTimeMs: this.recoveryMetrics.averageRecoveryTimeMs,
-      categorySuccessRates: Object.fromEntries(categoryRates),
-      recentHistory: this.recoveryMetrics.recoveryAttemptHistory.slice(-10),
-      lastRecoveryTimestamp: this.recoveryMetrics.lastRecoveryTimestamp,
-    };
-  }
-
-  /**
-   * Log recovery metrics for monitoring and debugging
-   */
-  private logRecoveryMetrics(): void {
-    const metrics = this.getTimeoutRecoveryMetrics();
-
-    this.logger.info(`Recovery Metrics Summary:
-      Overall Success Rate: ${metrics.overallSuccessRate.toFixed(1)}%
-      Total Attempts: ${metrics.totalAttempts}
-      Successful: ${metrics.successfulRecoveries}
-      Failed: ${metrics.failedRecoveries}
-      Avg Recovery Time: ${metrics.averageRecoveryTimeMs.toFixed(0)}ms`);
-
-    if (Object.keys(metrics.categorySuccessRates).length > 0) {
-      const categoryReport = Object.entries(metrics.categorySuccessRates)
-        .map(([category, rate]) => `${category}: ${rate.toFixed(1)}%`)
-        .join(', ');
-
-      this.logger.info(`Category Success Rates: ${categoryReport}`);
-    }
+    return this.timeoutRecoveryManager.getTimeoutRecoveryMetrics();
   }
 
   /**
@@ -2282,7 +1616,7 @@ export class ConsoleManager
     }
 
     // Reset timeout recovery attempts on successful cleanup
-    this.timeoutRecoveryAttempts.delete(sessionId);
+    this.timeoutRecoveryManager.clearRecoveryAttempts(sessionId);
   }
 
   /**
@@ -2557,28 +1891,10 @@ export class ConsoleManager
       // Get current metrics
       result.metrics = this.metricsCollector.getCurrentMetrics();
 
-      // Get Kubernetes health if protocol is active
-      if (this.kubernetesProtocol) {
-        try {
-          const kubernetesHealth =
-            await this.kubernetesProtocol.performHealthCheck();
-          result.connectionHealth.set('kubernetes', {
-            type: 'kubernetes',
-            status: kubernetesHealth.status,
-            overallScore: kubernetesHealth.overallScore,
-            checks: kubernetesHealth.checks,
-            context: this.kubernetesProtocol.getCurrentContext(),
-            activeSessions: this.kubernetesProtocol.getActiveSessions().length,
-            timestamp: new Date(),
-          });
-        } catch (error) {
-          result.connectionHealth.set('kubernetes', {
-            type: 'kubernetes',
-            status: 'critical',
-            error: error.message,
-            timestamp: new Date(),
-          });
-        }
+      // Get Kubernetes health if protocol is active — delegates to KubernetesSessionManager
+      const kubernetesHealthStatus = await this.kubernetesSessionManager.getHealthStatus();
+      if (kubernetesHealthStatus) {
+        result.connectionHealth.set('kubernetes', kubernetesHealthStatus);
       }
     }
 
@@ -3109,169 +2425,14 @@ export class ConsoleManager
   }
 
   /**
-   * Create Kubernetes session using KubernetesProtocol
+   * Create Kubernetes session — delegates to KubernetesSessionManager
    */
   private async createKubernetesSession(
     sessionId: string,
     session: ConsoleSession,
     options: SessionOptions
   ): Promise<string> {
-    if (!options.kubernetesOptions) {
-      throw new Error('Kubernetes options are required for Kubernetes session');
-    }
-
-    try {
-      // Initialize Kubernetes protocol if not already done
-      if (!this.kubernetesProtocol) {
-        this.kubernetesProtocol =
-          await this.protocolFactory.createProtocol('kubectl');
-        /* Legacy config - now handled by protocol factory
-        this.kubernetesProtocol = new KubernetesProtocol({
-          connectionOptions: options.kubernetesOptions,
-          logger: this.logger
-        });
-        await this.kubernetesProtocol.connect();
-        */
-      }
-
-      // Determine session operation type based on command or console type
-      let sessionType: 'exec' | 'logs' | 'port-forward' = 'exec';
-      if (
-        options.command.includes('logs') ||
-        options.consoleType === 'k8s-logs'
-      ) {
-        sessionType = 'logs';
-      } else if (
-        options.command.includes('port-forward') ||
-        options.consoleType === 'k8s-port-forward'
-      ) {
-        sessionType = 'port-forward';
-      }
-
-      // Create Kubernetes session state
-      const kubernetesState: import('../types/index.js').KubernetesSessionState =
-        {
-          sessionType: sessionType,
-          kubeConfig: options.kubernetesOptions,
-          connectionState: {
-            connected: false,
-            reconnectAttempts: 0,
-          },
-        };
-
-      // Parse Kubernetes-specific options from command and args
-      const kubernetesExecOptions = this.parseKubernetesOptions(options);
-
-      if (sessionType === 'exec') {
-        // Create exec session
-        await this.kubernetesProtocol.createExecSession(
-          sessionId,
-          kubernetesExecOptions
-        );
-
-        // Setup event handlers for exec session
-        this.setupKubernetesExecHandlers(sessionId);
-      } else if (sessionType === 'logs') {
-        // Create log streaming session
-        const logOptions = this.parseKubernetesLogOptions(options);
-        await this.kubernetesProtocol.streamLogs(sessionId, logOptions);
-
-        // Setup event handlers for log streaming
-        this.setupKubernetesLogHandlers(sessionId);
-      } else if (sessionType === 'port-forward') {
-        // Create port forwarding session
-        const portForwardOptions = this.parsePortForwardOptions(options);
-        await this.kubernetesProtocol.startPortForward(
-          sessionId,
-          portForwardOptions
-        );
-
-        // Setup event handlers for port forwarding
-        this.setupKubernetesPortForwardHandlers(sessionId);
-      }
-
-      // Update session with Kubernetes state
-      const updatedSession = {
-        ...session,
-        kubernetesState: kubernetesState,
-        status: 'running' as const,
-        pid: undefined as number | undefined, // Kubernetes sessions don't have local PIDs
-      };
-      this.sessions.set(sessionId, updatedSession);
-      this.outputBuffers.set(sessionId, []);
-
-      // Register Kubernetes session with health monitoring
-      if (this.selfHealingEnabled) {
-        this.registerSessionWithHealthMonitoring(
-          sessionId,
-          updatedSession,
-          options
-        ).catch((error) => {
-          this.logger.warn(
-            `Failed to register Kubernetes session with health monitoring: ${error.message}`
-          );
-        });
-        this.logger.debug(
-          `Kubernetes session ${sessionId} registered for monitoring`
-        );
-      }
-
-      // Setup stream manager for Kubernetes output
-      if (options.streaming) {
-        const streamManager = new StreamManager(sessionId, {
-          enableRealTimeCapture: true,
-          immediateFlush: true,
-          bufferFlushInterval: 5,
-          pollingInterval: 25,
-          chunkCombinationTimeout: 10,
-          maxChunkSize: 4096,
-        });
-        this.streamManagers.set(sessionId, streamManager);
-      } else {
-        const streamManager = new StreamManager(sessionId, {
-          enableRealTimeCapture: true,
-          immediateFlush: true,
-          bufferFlushInterval: 10,
-          pollingInterval: 50,
-          chunkCombinationTimeout: 15,
-          maxChunkSize: 8192,
-        });
-        this.streamManagers.set(sessionId, streamManager);
-      }
-
-      // Update session manager
-      await this.sessionManager.updateSessionStatus(sessionId, 'running', {
-        kubernetesContext: this.kubernetesProtocol.getCurrentContext().context,
-        kubernetesNamespace:
-          this.kubernetesProtocol.getCurrentContext().namespace,
-        sessionType: sessionType,
-      });
-
-      this.emitEvent({
-        sessionId,
-        type: 'started',
-        timestamp: new Date(),
-        data: {
-          command: options.command,
-          type: 'kubernetes',
-          context: this.kubernetesProtocol.getCurrentContext().context,
-          namespace: this.kubernetesProtocol.getCurrentContext().namespace,
-          sessionType: sessionType,
-        },
-      });
-
-      this.logger.info(
-        `Kubernetes ${sessionType} session ${sessionId} created: ${options.command}`
-      );
-
-      return sessionId;
-    } catch (error) {
-      this.logger.error(
-        `Kubernetes session creation failed for ${sessionId}:`,
-        error
-      );
-      throw error;
-    }
+    return this.kubernetesSessionManager.createSession(sessionId, session, options);
   }
 
   /**
@@ -3387,1104 +2548,30 @@ export class ConsoleManager
     }
   }
 
-  /**
-   * Parse Kubernetes exec options from session options
-   */
-  private parseKubernetesOptions(
-    options: SessionOptions
-  ): import('../types/index.js').KubernetesExecOptions {
-    const args = options.args || [];
-    const kubernetesOptions: import('../types/index.js').KubernetesExecOptions =
-      {
-        namespace: options.kubernetesOptions?.namespace,
-        interactive: true,
-        stdin: true,
-      };
-
-    // Parse common kubectl exec arguments
-    for (let i = 0; i < args.length; i++) {
-      const arg = args[i];
-      switch (arg) {
-        case '-n':
-        case '--namespace':
-          kubernetesOptions.namespace = args[i + 1];
-          i++;
-          break;
-        case '-c':
-        case '--container':
-          kubernetesOptions.containerName = args[i + 1];
-          i++;
-          break;
-        case '-l':
-        case '--selector':
-          kubernetesOptions.labelSelector = args[i + 1];
-          i++;
-          break;
-        default:
-          if (!kubernetesOptions.name && !arg.startsWith('-')) {
-            kubernetesOptions.name = arg;
-          }
-          break;
-      }
-    }
-
-    return kubernetesOptions;
-  }
+  // parseKubernetesOptions, parseKubernetesLogOptions, parsePortForwardOptions — removed, now in KubernetesSessionManager
+  // setupKubernetesExecHandlers, setupKubernetesLogHandlers, setupKubernetesPortForwardHandlers — removed, now in KubernetesSessionManager
+  // handleKubernetesSessionClosed, handleKubernetesLogData, handleKubernetesLogError, handleKubernetesLogEnd, handleKubernetesPortForwardStopped — removed, now in KubernetesSessionManager
 
   /**
-   * Parse Kubernetes log options from session options
-   */
-  private parseKubernetesLogOptions(
-    options: SessionOptions
-  ): import('../types/index.js').KubernetesLogOptions {
-    const args = options.args || [];
-    const logOptions: import('../types/index.js').KubernetesLogOptions = {
-      namespace: options.kubernetesOptions?.namespace,
-      follow: true,
-    };
-
-    // Parse kubectl logs arguments
-    for (let i = 0; i < args.length; i++) {
-      const arg = args[i];
-      switch (arg) {
-        case '-n':
-        case '--namespace':
-          logOptions.namespace = args[i + 1];
-          i++;
-          break;
-        case '-c':
-        case '--container':
-          logOptions.containerName = args[i + 1];
-          i++;
-          break;
-        case '-l':
-        case '--selector':
-          logOptions.labelSelector = args[i + 1];
-          i++;
-          break;
-        case '-f':
-        case '--follow':
-          logOptions.follow = true;
-          break;
-        case '--tail':
-          logOptions.tail = parseInt(args[i + 1]);
-          i++;
-          break;
-        case '--since':
-          logOptions.since = args[i + 1];
-          i++;
-          break;
-        case '--timestamps':
-          logOptions.timestamps = true;
-          break;
-        case '--previous':
-          logOptions.previous = true;
-          break;
-        default:
-          if (!logOptions.podName && !arg.startsWith('-')) {
-            logOptions.podName = arg;
-          }
-          break;
-      }
-    }
-
-    return logOptions;
-  }
-
-  /**
-   * Parse port forward options from session options
-   */
-  private parsePortForwardOptions(
-    options: SessionOptions
-  ): import('../types/index.js').PortForwardOptions {
-    const args = options.args || [];
-    let podName = '';
-    let localPort = 0;
-    let remotePort = 0;
-    let namespace = options.kubernetesOptions?.namespace;
-
-    // Parse kubectl port-forward arguments
-    for (let i = 0; i < args.length; i++) {
-      const arg = args[i];
-      if (arg === '-n' || arg === '--namespace') {
-        namespace = args[i + 1];
-        i++;
-      } else if (!arg.startsWith('-')) {
-        if (!podName) {
-          podName = arg;
-        } else if (arg.includes(':')) {
-          const ports = arg.split(':');
-          localPort = parseInt(ports[0]);
-          remotePort = parseInt(ports[1]);
-        }
-      }
-    }
-
-    return {
-      podName,
-      localPort,
-      remotePort,
-      namespace,
-    };
-  }
-
-  /**
-   * Setup event handlers for Kubernetes exec sessions
-   */
-  private setupKubernetesExecHandlers(sessionId: string): void {
-    if (!this.kubernetesProtocol) return;
-
-    // Handle session events
-    this.kubernetesProtocol.on(
-      'sessionCreated',
-      ({ sessionId: k8sSessionId, sessionState }: { sessionId: string; sessionState: string }) => {
-        if (k8sSessionId === sessionId) {
-          this.logger.debug(`Kubernetes exec session ${sessionId} established`);
-        }
-      }
-    );
-
-    this.kubernetesProtocol.on(
-      'sessionClosed',
-      ({ sessionId: k8sSessionId }: { sessionId: string }) => {
-        if (k8sSessionId === sessionId) {
-          this.handleKubernetesSessionClosed(sessionId);
-        }
-      }
-    );
-  }
-
-  /**
-   * Setup event handlers for Kubernetes log streaming
-   */
-  private setupKubernetesLogHandlers(sessionId: string): void {
-    if (!this.kubernetesProtocol) return;
-
-    this.kubernetesProtocol.on(
-      'logData',
-      ({ streamId, podName, data, raw }: { streamId: string; podName: string; data: string; raw: string }) => {
-        if (streamId === sessionId) {
-          this.handleKubernetesLogData(sessionId, data, raw);
-        }
-      }
-    );
-
-    this.kubernetesProtocol.on('logError', ({ streamId, error }: { streamId: string; error: Error }) => {
-      if (streamId === sessionId) {
-        this.handleKubernetesLogError(sessionId, error);
-      }
-    });
-
-    this.kubernetesProtocol.on('logEnd', ({ streamId }: { streamId: string }) => {
-      if (streamId === sessionId) {
-        this.handleKubernetesLogEnd(sessionId);
-      }
-    });
-  }
-
-  /**
-   * Setup event handlers for Kubernetes port forwarding
-   */
-  private setupKubernetesPortForwardHandlers(sessionId: string): void {
-    if (!this.kubernetesProtocol) return;
-
-    this.kubernetesProtocol.on(
-      'portForwardStarted',
-      ({ portForwardId, localPort, remotePort }: { portForwardId: string; localPort: number; remotePort: number }) => {
-        if (portForwardId === sessionId) {
-          this.logger.info(
-            `Port forward ${sessionId} started: ${localPort} -> ${remotePort}`
-          );
-        }
-      }
-    );
-
-    this.kubernetesProtocol.on('portForwardStopped', ({ portForwardId }: { portForwardId: string }) => {
-      if (portForwardId === sessionId) {
-        this.handleKubernetesPortForwardStopped(sessionId);
-      }
-    });
-  }
-
-  /**
-   * Handle Kubernetes session closed
-   */
-  private handleKubernetesSessionClosed(sessionId: string): void {
-    const session = this.sessions.get(sessionId);
-    // Remove session from the map after stopping
-    if (session) {
-      this.sessions.delete(sessionId);
-    }
-
-    this.emitEvent({
-      sessionId,
-      type: 'stopped',
-      timestamp: new Date(),
-      data: { reason: 'kubernetes_session_closed' },
-    });
-
-    this.logger.info(`Kubernetes session ${sessionId} closed`);
-  }
-
-  /**
-   * Handle Kubernetes log data
-   */
-  private handleKubernetesLogData(
-    sessionId: string,
-    data: string,
-    raw: string
-  ): void {
-    const output: ConsoleOutput = {
-      sessionId,
-      type: 'stdout',
-      data: data,
-      timestamp: new Date(),
-      raw: raw,
-    };
-
-    const buffer = this.outputBuffers.get(sessionId) || [];
-    buffer.push(output);
-    this.outputBuffers.set(sessionId, buffer);
-
-    const streamManager = this.streamManagers.get(sessionId);
-    if (streamManager) {
-      streamManager.processOutput(output);
-    }
-
-    this.emitEvent({
-      sessionId,
-      type: 'output',
-      timestamp: new Date(),
-      data: output,
-    });
-  }
-
-  /**
-   * Handle Kubernetes log error
-   */
-  private handleKubernetesLogError(sessionId: string, error: Error): void {
-    const output: ConsoleOutput = {
-      sessionId,
-      type: 'stderr',
-      data: error.message,
-      timestamp: new Date(),
-    };
-
-    const buffer = this.outputBuffers.get(sessionId) || [];
-    buffer.push(output);
-    this.outputBuffers.set(sessionId, buffer);
-
-    this.emitEvent({
-      sessionId,
-      type: 'error',
-      timestamp: new Date(),
-      data: { error: error.message },
-    });
-
-    this.logger.error(`Kubernetes log error for session ${sessionId}:`, error);
-  }
-
-  /**
-   * Handle Kubernetes log stream end
-   */
-  private handleKubernetesLogEnd(sessionId: string): void {
-    const session = this.sessions.get(sessionId);
-    // Remove session from the map when log stream ends
-    if (session) {
-      this.sessions.delete(sessionId);
-    }
-
-    this.emitEvent({
-      sessionId,
-      type: 'stopped',
-      timestamp: new Date(),
-      data: { reason: 'log_stream_ended' },
-    });
-
-    this.logger.info(`Kubernetes log stream ${sessionId} ended`);
-  }
-
-  /**
-   * Handle Kubernetes port forward stopped
-   */
-  private handleKubernetesPortForwardStopped(sessionId: string): void {
-    const session = this.sessions.get(sessionId);
-    // Remove session from the map when port forward stops
-    if (session) {
-      this.sessions.delete(sessionId);
-    }
-
-    this.emitEvent({
-      sessionId,
-      type: 'stopped',
-      timestamp: new Date(),
-      data: { reason: 'port_forward_stopped' },
-    });
-
-    this.logger.info(`Kubernetes port forward ${sessionId} stopped`);
-  }
-
-  /**
-   * Create serial session using SerialProtocol
+   * Create serial session — delegates to SerialSessionManager
    */
   private async createSerialSession(
     sessionId: string,
     session: ConsoleSession,
     options: SessionOptions
   ): Promise<string> {
-    if (
-      !options.serialOptions &&
-      !['serial', 'com', 'uart'].includes(options.consoleType || '')
-    ) {
-      throw new Error(
-        'Serial options or serial console type required for serial session'
-      );
-    }
-
-    try {
-      // Initialize serial protocol if not already done
-      if (!this.serialProtocol) {
-        this.serialProtocol =
-          await this.protocolFactory.createProtocol('serial');
-        this.setupSerialProtocolEventHandlers();
-      }
-
-      // Determine serial options
-      let serialOptions: SerialConnectionOptions;
-
-      if (options.serialOptions) {
-        serialOptions = options.serialOptions;
-      } else {
-        // Auto-detect serial port if only console type is specified
-        const devices = await this.serialProtocol.discoverDevices();
-        const availableDevice = devices.find(
-          (device: { isConnected: boolean }) => device.isConnected === false
-        );
-
-        if (!availableDevice) {
-          throw new Error(
-            'No available serial devices found. Please specify explicit serial options.'
-          );
-        }
-
-        // Use first available device with default settings
-        serialOptions = {
-          path: availableDevice.path,
-          baudRate: availableDevice.deviceType === 'esp32' ? 115200 : 9600,
-          dataBits: 8,
-          stopBits: 1,
-          parity: 'none',
-          encoding: 'utf8',
-          lineEnding: '\r\n',
-          resetOnConnect: availableDevice.deviceType === 'arduino',
-          reconnectOnDisconnect: true,
-          maxReconnectAttempts: 5,
-          reconnectDelay: 1000,
-        };
-      }
-
-      // Store serial options in session
-      session.serialOptions = serialOptions;
-
-      // Create serial connection
-      await this.serialProtocol.createConnection(sessionId, serialOptions);
-
-      // Set up session tracking
-      this.sessions.set(sessionId, session);
-      this.outputBuffers.set(sessionId, []);
-
-      // Initialize stream manager for serial output
-      const streamManager = new StreamManager(sessionId, {
-        maxChunkSize: options.maxBuffer || 10000,
-        enableRealTimeCapture: true,
-        bufferFlushInterval: 10,
-        enablePolling: true,
-        pollingInterval: 50,
-        immediateFlush: true,
-        chunkCombinationTimeout: 20,
-      });
-      this.streamManagers.set(sessionId, streamManager);
-
-      // Initialize error detection for serial output
-      if (options.detectErrors !== false) {
-        const defaultPatterns = this.getDefaultSerialErrorPatterns();
-        const extendedPatterns = options.patterns
-          ? options.patterns.map((p) => ({ ...p, category: 'serial' }))
-          : defaultPatterns;
-        this.errorDetector.addPatterns(extendedPatterns);
-      }
-
-      this.logger.info(
-        `Serial session created successfully: ${sessionId} on ${serialOptions.path}`
-      );
-
-      // Emit session started event
-      this.emit('session:created', {
-        sessionId,
-        type: 'serial',
-        path: serialOptions.path,
-        deviceType: serialOptions.deviceType || 'generic',
-        timestamp: new Date(),
-      });
-
-      return sessionId;
-    } catch (error) {
-      this.logger.error(
-        `Serial session creation failed for ${sessionId}:`,
-        error
-      );
-
-      // Clean up on failure
-      await this.cleanupSerialSession(sessionId);
-
-      throw error;
-    }
+    return this.serialSessionManager.createSession(sessionId, session, options);
   }
 
   /**
-   * Set up event handlers for SerialProtocol
-   */
-  private setupSerialProtocolEventHandlers(): void {
-    this.serialProtocol.on('data', (output: ConsoleOutput) => {
-      this.handleSerialOutput(output);
-    });
-
-    this.serialProtocol.on('line', (output: ConsoleOutput) => {
-      this.handleSerialLine(output);
-    });
-
-    this.serialProtocol.on('binary_data', (output: ConsoleOutput) => {
-      this.handleSerialBinaryData(output);
-    });
-
-    this.serialProtocol.on('connection', (event: unknown) => {
-      this.logger.info(`Serial connection event:`, event);
-      this.emit('serial:connection', event);
-    });
-
-    this.serialProtocol.on('disconnection', (event: unknown) => {
-      this.logger.warn(`Serial disconnection event:`, event);
-      this.emit('serial:disconnection', event);
-    });
-
-    this.serialProtocol.on('error', (event: unknown) => {
-      this.logger.error(`Serial error event:`, event);
-      this.emit('serial:error', event);
-    });
-
-    this.serialProtocol.on('bootloader_detected', (event: unknown) => {
-      this.logger.info(`Bootloader detected:`, event);
-      this.emit('serial:bootloader_detected', event);
-    });
-
-    this.serialProtocol.on('device_list_updated', (devices: unknown) => {
-      this.emit('serial:device_list_updated', devices);
-    });
-  }
-
-  /**
-   * Handle serial data output
-   */
-  private handleSerialOutput(output: ConsoleOutput): void {
-    const { sessionId } = output;
-
-    // Store output in buffer
-    const buffer = this.outputBuffers.get(sessionId);
-    if (buffer) {
-      buffer.push(output);
-    }
-
-    // Pass through stream manager
-    const streamManager = this.streamManagers.get(sessionId);
-    if (streamManager) {
-      streamManager.processOutput(output);
-    }
-
-    // Emit output event
-    this.emit('output', output);
-    this.emit(`output:${sessionId}`, output);
-  }
-
-  /**
-   * Handle serial line output (parsed lines)
-   */
-  private handleSerialLine(output: ConsoleOutput): void {
-    const { sessionId } = output;
-
-    // Process line for error detection
-    if (this.errorDetector) {
-      this.errorDetector.processOutput(output.data);
-    }
-
-    // Process line for prompt detection
-    if (this.promptDetector) {
-      const result = this.promptDetector.detectPrompt(sessionId, output.data);
-      if (result && result.detected) {
-        this.emit('prompt:detected', {
-          sessionId,
-          pattern: result.pattern,
-          matchedText: result.matchedText,
-          timestamp: new Date(),
-        });
-      }
-    }
-
-    // Regular output handling
-    this.handleSerialOutput(output);
-  }
-
-  /**
-   * Handle binary data from serial connection
-   */
-  private handleSerialBinaryData(output: ConsoleOutput): void {
-    // Binary data typically bypasses text processing
-    this.handleSerialOutput(output);
-  }
-
-  /**
-   * Get default error patterns for serial communication
-   */
-  private getDefaultSerialErrorPatterns(): ExtendedErrorPattern[] {
-    return [
-      {
-        pattern: /error|ERROR|Error/,
-        type: 'error',
-        description: 'General error message',
-        severity: 'medium',
-        category: 'serial',
-        tags: ['serial', 'general'],
-      },
-      {
-        pattern: /exception|Exception|EXCEPTION/,
-        type: 'exception',
-        description: 'Exception in serial communication',
-        severity: 'high',
-        category: 'serial',
-        tags: ['serial', 'exception'],
-      },
-      {
-        pattern: /timeout|Timeout|TIMEOUT/,
-        type: 'error',
-        description: 'Serial communication timeout',
-        severity: 'medium',
-        category: 'serial',
-        tags: ['serial', 'timeout'],
-      },
-      {
-        pattern: /connection.*lost|disconnected|unplugged/i,
-        type: 'error',
-        description: 'Serial device disconnected',
-        severity: 'high',
-        category: 'serial',
-        tags: ['serial', 'connection'],
-      },
-      {
-        pattern: /bootloader|Bootloader|BOOTLOADER/,
-        type: 'warning',
-        description: 'Device in bootloader mode',
-        severity: 'low',
-        category: 'serial',
-        tags: ['serial', 'bootloader'],
-      },
-    ];
-  }
-
-  /**
-   * Clean up serial session resources
-   */
-  private async cleanupSerialSession(sessionId: string): Promise<void> {
-    try {
-      // Remove from sessions map
-      this.sessions.delete(sessionId);
-
-      // Close serial connection
-      if (this.serialProtocol) {
-        await this.serialProtocol.closeConnection(sessionId);
-      }
-
-      // Clean up buffers and managers
-      this.outputBuffers.delete(sessionId);
-      this.streamManagers.delete(sessionId);
-      // Cleanup pagination manager for this session
-      this.paginationManager.removeSession(sessionId);
-
-      // Error patterns are global and don't need session-specific cleanup
-    } catch (error) {
-      this.logger.error(
-        `Error cleaning up serial session ${sessionId}:`,
-        error
-      );
-    }
-  }
-
-  /**
-   * Create AWS SSM session using AWS Systems Manager Session Manager
+   * Create AWS SSM session — delegates to AWSSSMSessionManager
    */
   private async createAWSSSMSession(
     sessionId: string,
     session: ConsoleSession,
     options: SessionOptions
   ): Promise<string> {
-    if (
-      !options.awsSSMOptions &&
-      !['aws-ssm', 'ssm-session', 'ssm-tunnel'].includes(
-        options.consoleType || ''
-      )
-    ) {
-      throw new Error(
-        'AWS SSM options or AWS SSM console type required for AWS SSM session'
-      );
-    }
-
-    try {
-      // Initialize AWS SSM protocol if not already done
-      if (!this.awsSSMProtocol) {
-        const ssmConfig: AWSSSMConnectionOptions = options.awsSSMOptions || {
-          region:
-            process.env.AWS_REGION ||
-            process.env.AWS_DEFAULT_REGION ||
-            'us-east-1',
-        };
-
-        // Ensure required region is provided
-        if (!ssmConfig.region) {
-          ssmConfig.region =
-            process.env.AWS_REGION ||
-            process.env.AWS_DEFAULT_REGION ||
-            'us-east-1';
-        }
-
-        this.awsSSMProtocol =
-          await this.protocolFactory.createProtocol('aws-ssm');
-        this.setupAWSSSMProtocolEventHandlers();
-      }
-
-      // Determine session type based on console type and options
-      const ssmSessionType = this.determineSSMSessionType(options);
-
-      let ssmSessionId: string;
-
-      switch (ssmSessionType) {
-        case 'interactive':
-          // Start interactive shell session
-          if (!options.awsSSMOptions?.instanceId) {
-            throw new Error(
-              'Instance ID is required for interactive SSM sessions'
-            );
-          }
-          ssmSessionId = await this.awsSSMProtocol.startSession(
-            options.awsSSMOptions
-          );
-          break;
-
-        case 'port-forwarding':
-          // Start port forwarding session
-          if (
-            !options.awsSSMOptions?.instanceId ||
-            !options.awsSSMOptions?.portNumber
-          ) {
-            throw new Error(
-              'Instance ID and port number are required for SSM port forwarding'
-            );
-          }
-          ssmSessionId = await this.awsSSMProtocol.startPortForwardingSession(
-            options.awsSSMOptions.instanceId,
-            options.awsSSMOptions.portNumber,
-            options.awsSSMOptions.localPortNumber
-          );
-          break;
-
-        case 'command':
-          // Execute command via SSM
-          if (!options.awsSSMOptions?.documentName) {
-            throw new Error(
-              'Document name is required for SSM command execution'
-            );
-          }
-          ssmSessionId = await this.awsSSMProtocol.sendCommand(
-            options.awsSSMOptions.documentName,
-            options.awsSSMOptions.parameters || {},
-            options.awsSSMOptions.instanceId
-              ? [
-                  {
-                    type: 'instance',
-                    id: options.awsSSMOptions.instanceId,
-                  },
-                ]
-              : undefined
-          );
-          break;
-
-        default:
-          throw new Error(
-            `Unsupported AWS SSM session type: ${ssmSessionType}`
-          );
-      }
-
-      // Update session with SSM-specific information
-      session.awsSSMSessionId = ssmSessionId;
-      session.awsSSMOptions = options.awsSSMOptions;
-
-      // Store session
-      this.sessions.set(sessionId, session);
-
-      // Set up session monitoring
-      this.setupSSMSessionMonitoring(sessionId, ssmSessionId);
-
-      this.logger.info(
-        `AWS SSM session created: ${sessionId} (SSM: ${ssmSessionId}, type: ${ssmSessionType})`
-      );
-      this.emit('session-created', {
-        sessionId,
-        type: 'aws-ssm',
-        ssmSessionId,
-        ssmSessionType,
-      });
-
-      return sessionId;
-    } catch (error) {
-      this.logger.error(
-        `Failed to create AWS SSM session ${sessionId}:`,
-        error
-      );
-      throw error;
-    }
-  }
-
-  /**
-   * Determine the type of SSM session based on options and console type
-   */
-  private determineSSMSessionType(
-    options: SessionOptions
-  ): 'interactive' | 'port-forwarding' | 'command' {
-    const consoleType = options.consoleType;
-
-    if (consoleType === 'ssm-tunnel' || options.awsSSMOptions?.portNumber) {
-      return 'port-forwarding';
-    }
-
-    if (consoleType === 'aws-ssm' || consoleType === 'ssm-session') {
-      return options.awsSSMOptions?.documentName ? 'command' : 'interactive';
-    }
-
-    // Default to interactive for AWS SSM console types
-    return 'interactive';
-  }
-
-  /**
-   * Set up event handlers for AWS SSM Protocol
-   */
-  private setupAWSSSMProtocolEventHandlers(): void {
-    this.awsSSMProtocol.on('output', (output: ConsoleOutput) => {
-      this.handleSSMOutput(output);
-    });
-
-    this.awsSSMProtocol.on(
-      'session-started',
-      (data: { sessionId: string; instanceId?: string }) => {
-        this.logger.info(`AWS SSM session started: ${data.sessionId}`);
-        this.emit('console-event', {
-          sessionId: data.sessionId,
-          type: 'started',
-          timestamp: new Date(),
-          data,
-        });
-      }
-    );
-
-    this.awsSSMProtocol.on(
-      'session-terminated',
-      (data: { sessionId: string }) => {
-        this.logger.info(`AWS SSM session terminated: ${data.sessionId}`);
-        this.handleSSMSessionTermination(data.sessionId);
-      }
-    );
-
-    this.awsSSMProtocol.on(
-      'session-error',
-      (data: { sessionId: string; error: Error }) => {
-        this.logger.error(
-          `AWS SSM session error: ${data.sessionId}`,
-          data.error
-        );
-        this.handleSSMSessionError(data.sessionId, data.error);
-      }
-    );
-
-    this.awsSSMProtocol.on(
-      'port-forwarding-started',
-      (data: {
-        sessionId: string;
-        targetId: string;
-        portNumber: number;
-        localPortNumber: number;
-      }) => {
-        this.logger.info(
-          `AWS SSM port forwarding started: ${data.sessionId} (${data.targetId}:${data.portNumber} -> localhost:${data.localPortNumber})`
-        );
-        this.emit('console-event', {
-          sessionId: data.sessionId,
-          type: 'started',
-          timestamp: new Date(),
-          data,
-        });
-      }
-    );
-
-    this.awsSSMProtocol.on(
-      'command-sent',
-      (data: { commandId: string; documentName: string }) => {
-        this.logger.info(
-          `AWS SSM command sent: ${data.commandId} (${data.documentName})`
-        );
-      }
-    );
-
-    this.awsSSMProtocol.on(
-      'command-completed',
-      (data: { commandId: string; status: string }) => {
-        this.logger.info(
-          `AWS SSM command completed: ${data.commandId} (${data.status})`
-        );
-      }
-    );
-
-    this.awsSSMProtocol.on(
-      'health-check',
-      (data: { status: string; timestamp: Date; error?: unknown }) => {
-        if (data.status === 'unhealthy') {
-          this.logger.warn(`AWS SSM protocol health check failed:`, data.error);
-        }
-      }
-    );
-
-    this.awsSSMProtocol.on(
-      'session-recovered',
-      (data: { sessionId: string }) => {
-        this.logger.info(`AWS SSM session recovered: ${data.sessionId}`);
-      }
-    );
-  }
-
-  /**
-   * Handle AWS SSM output
-   */
-  private handleSSMOutput(output: ConsoleOutput): void {
-    // Find the corresponding console session
-    const session = Array.from(this.sessions.values()).find(
-      (s) => s.awsSSMSessionId === output.sessionId
-    );
-    if (session) {
-      // Update output with console session ID
-      const consoleOutput: ConsoleOutput = {
-        ...output,
-        sessionId: session.id,
-      };
-
-      // Store output in buffer
-      const outputs = this.outputBuffers.get(session.id) || [];
-      outputs.push(consoleOutput);
-      this.outputBuffers.set(session.id, outputs);
-      // Also add to pagination manager for large output handling
-      this.paginationManager.addOutputs(session.id, [consoleOutput]);
-
-      // Emit output event
-      this.emit('output', consoleOutput);
-      this.emit('console-event', {
-        sessionId: session.id,
-        type: 'output',
-        timestamp: new Date(),
-        data: consoleOutput,
-      });
-
-      // Process output for error detection
-      if (this.errorDetector) {
-        this.errorDetector.processOutput(consoleOutput);
-      }
-    }
-  }
-
-  /**
-   * Handle AWS SSM session termination
-   */
-  private handleSSMSessionTermination(ssmSessionId: string): void {
-    const session = Array.from(this.sessions.values()).find(
-      (s) => s.awsSSMSessionId === ssmSessionId
-    );
-    if (session) {
-      // Remove session from the map on SSM termination
-      this.sessions.delete(session.id);
-
-      this.emit('console-event', {
-        sessionId: session.id,
-        type: 'stopped',
-        timestamp: new Date(),
-        data: { ssmSessionId },
-      });
-    }
-  }
-
-  /**
-   * Handle AWS SSM session errors
-   */
-  private handleSSMSessionError(ssmSessionId: string, error: Error): void {
-    const session = Array.from(this.sessions.values()).find(
-      (s) => s.awsSSMSessionId === ssmSessionId
-    );
-    if (session) {
-      session.status = 'crashed';
-      this.sessions.set(session.id, session);
-
-      this.emit('console-event', {
-        sessionId: session.id,
-        type: 'error',
-        timestamp: new Date(),
-        data: { error: error.message, ssmSessionId },
-      });
-
-      // Attempt error recovery if enabled
-      if (this.selfHealingEnabled) {
-        this.attemptSSMSessionRecovery(session.id, ssmSessionId, error);
-      }
-    }
-  }
-
-  /**
-   * Set up monitoring for AWS SSM session
-   */
-  private setupSSMSessionMonitoring(
-    sessionId: string,
-    ssmSessionId: string
-  ): void {
-    // Add to session monitoring
-    if (this.heartbeatMonitor) {
-      this.heartbeatMonitor.addSession(sessionId, {
-        id: sessionId,
-        status: 'running',
-        type: 'aws-ssm',
-        createdAt: new Date(),
-        lastActivity: new Date(),
-        recoveryAttempts: 0,
-        maxRecoveryAttempts: 3,
-        healthScore: 100,
-      });
-    }
-
-    // Start health checks
-    const healthCheckInterval = setInterval(async () => {
-      if (!this.awsSSMProtocol.isHealthy()) {
-        this.logger.warn(
-          `AWS SSM protocol unhealthy, attempting recovery for session ${sessionId}`
-        );
-        await this.attemptSSMSessionRecovery(
-          sessionId,
-          ssmSessionId,
-          new Error('Protocol unhealthy')
-        );
-      }
-    }, 60000); // Check every minute
-
-    // Store interval for cleanup
-    this.sessionHealthCheckIntervals =
-      this.sessionHealthCheckIntervals || new Map();
-    this.sessionHealthCheckIntervals.set(sessionId, healthCheckInterval);
-  }
-
-  /**
-   * Attempt to recover an AWS SSM session
-   */
-  private async attemptSSMSessionRecovery(
-    sessionId: string,
-    ssmSessionId: string,
-    error: Error
-  ): Promise<void> {
-    try {
-      this.logger.info(`Attempting AWS SSM session recovery for ${sessionId}`);
-
-      // Get session information
-      const session = this.sessions.get(sessionId);
-      if (!session || !session.awsSSMOptions) {
-        this.logger.warn(
-          `Cannot recover AWS SSM session ${sessionId}: session or options not found`
-        );
-        return;
-      }
-
-      // Try to terminate old session gracefully
-      try {
-        await this.awsSSMProtocol.terminateSession(ssmSessionId);
-      } catch (terminateError) {
-        this.logger.warn(
-          `Failed to terminate old SSM session ${ssmSessionId}:`,
-          terminateError
-        );
-      }
-
-      // Create new session with same options
-      const ssmSessionType = this.determineSSMSessionType({
-        consoleType: session.type,
-        awsSSMOptions: session.awsSSMOptions,
-        command: session.command || '/bin/bash', // Default command if not available
-      });
-
-      let newSsmSessionId: string;
-
-      switch (ssmSessionType) {
-        case 'interactive':
-          newSsmSessionId = await this.awsSSMProtocol.startSession(
-            session.awsSSMOptions
-          );
-          break;
-        case 'port-forwarding':
-          newSsmSessionId =
-            await this.awsSSMProtocol.startPortForwardingSession(
-              session.awsSSMOptions.instanceId!,
-              session.awsSSMOptions.portNumber!,
-              session.awsSSMOptions.localPortNumber
-            );
-          break;
-        case 'command':
-          newSsmSessionId = await this.awsSSMProtocol.sendCommand(
-            session.awsSSMOptions.documentName!,
-            session.awsSSMOptions.parameters || {},
-            session.awsSSMOptions.instanceId
-              ? [
-                  {
-                    type: 'instance',
-                    id: session.awsSSMOptions.instanceId,
-                  },
-                ]
-              : undefined
-          );
-          break;
-      }
-
-      // Update session with new SSM session ID
-      session.awsSSMSessionId = newSsmSessionId;
-      session.status = 'running';
-      this.sessions.set(sessionId, session);
-
-      this.logger.info(
-        `AWS SSM session recovery successful: ${sessionId} (new SSM: ${newSsmSessionId})`
-      );
-      this.emit('session-recovered', {
-        sessionId,
-        newSsmSessionId,
-        ssmSessionType,
-      });
-    } catch (recoveryError) {
-      this.logger.error(
-        `AWS SSM session recovery failed for ${sessionId}:`,
-        recoveryError
-      );
-
-      // Mark session as failed
-      const session = this.sessions.get(sessionId);
-      if (session) {
-        session.status = 'crashed';
-        this.sessions.set(sessionId, session);
-      }
-    }
+    return this.awsSSMSessionManager.createSession(sessionId, session, options);
   }
 
   /**
@@ -5948,8 +4035,8 @@ export class ConsoleManager
           return this.addCommandToQueue(sessionId, input);
         }
 
-        // Handle AWS SSM session
-        if (session.awsSSMOptions && this.awsSSMProtocol) {
+        // Handle AWS SSM session — delegates to AWSSSMSessionManager
+        if (session.awsSSMOptions) {
           return this.sendInputToAWSSSM(sessionId, input);
         }
 
@@ -5958,12 +4045,12 @@ export class ConsoleManager
           return this.sendInputToWinRM(sessionId, input);
         }
 
-        // Handle WebSocket terminal session
+        // Handle WebSocket terminal session — delegates to WebSocketTerminalSessionManager
         if (
           session.webSocketTerminalOptions &&
-          this.webSocketTerminalProtocol
+          this.wsTerminalSessionManager.hasSession(sessionId)
         ) {
-          return this.sendInputToWebSocketTerminal(sessionId, input);
+          return this.wsTerminalSessionManager.sendInput(sessionId, input);
         }
 
         // Handle regular process session
@@ -5974,7 +4061,7 @@ export class ConsoleManager
         operationName: 'send_input',
         strategyName: this.sshChannels.has(sessionId)
           ? 'ssh'
-          : this.webSocketTerminalSessions.has(sessionId)
+          : this.wsTerminalSessionManager.hasSession(sessionId)
             ? 'websocket-terminal'
             : 'generic',
         context: { inputLength: input.length },
@@ -6015,44 +4102,13 @@ export class ConsoleManager
   }
 
   /**
-   * Send input to Kubernetes session
+   * Send input to Kubernetes session — delegates to KubernetesSessionManager
    */
   private async sendInputToKubernetes(
     sessionId: string,
     input: string
   ): Promise<void> {
-    if (!this.kubernetesProtocol) {
-      throw new Error('Kubernetes protocol not initialized');
-    }
-
-    const session = this.sessions.get(sessionId);
-    if (!session || !session.kubernetesState) {
-      throw new Error(`Kubernetes session ${sessionId} not found`);
-    }
-
-    try {
-      // Only exec sessions support input
-      if (session.kubernetesState.sessionType === 'exec') {
-        await this.kubernetesProtocol.sendInput(sessionId, input);
-
-        this.emitEvent({
-          sessionId,
-          type: 'input',
-          timestamp: new Date(),
-          data: { input },
-        });
-      } else {
-        throw new Error(
-          `Input not supported for Kubernetes ${session.kubernetesState.sessionType} sessions`
-        );
-      }
-    } catch (error) {
-      this.logger.error(
-        `Failed to send input to Kubernetes session ${sessionId}:`,
-        error
-      );
-      throw error;
-    }
+    return this.kubernetesSessionManager.sendInput(sessionId, input);
   }
 
   async sendKey(sessionId: string, key: string): Promise<void> {
@@ -6263,80 +4319,26 @@ export class ConsoleManager
   }
 
   /**
-   * Send input to serial session
+   * Send input to serial session — delegates to SerialSessionManager
    */
   private async sendInputToSerial(
     sessionId: string,
     input: string
   ): Promise<void> {
-    if (!this.serialProtocol) {
-      throw new Error('Serial protocol not initialized');
-    }
-
-    try {
-      // Send data to serial device
-      await this.serialProtocol.sendData(sessionId, input);
-
-      // Emit input event
-      this.emitEvent({
-        sessionId,
-        type: 'input',
-        timestamp: new Date(),
-        data: { input },
-      });
-
-      this.logger.debug(
-        `Sent input to serial session ${sessionId}: ${input.substring(0, 100)}${input.length > 100 ? '...' : ''}`
-      );
-    } catch (error) {
-      this.logger.error(
-        `Failed to send input to serial session ${sessionId}:`,
-        error
-      );
-      throw error;
-    }
+    return this.serialSessionManager.sendInput(sessionId, input);
   }
 
   /**
    * Send input to AWS SSM session
    */
+  /**
+   * Send input to AWS SSM session — delegates to AWSSSMSessionManager
+   */
   private async sendInputToAWSSSM(
     sessionId: string,
     input: string
   ): Promise<void> {
-    if (!this.awsSSMProtocol) {
-      throw new Error('AWS SSM protocol not initialized');
-    }
-
-    const session = this.sessions.get(sessionId);
-    if (!session || !session.awsSSMSessionId) {
-      throw new Error(
-        `AWS SSM session ${sessionId} not found or SSM session ID missing`
-      );
-    }
-
-    try {
-      // Send input to AWS SSM session
-      await this.awsSSMProtocol.sendInput(session.awsSSMSessionId, input);
-
-      // Emit input event
-      this.emitEvent({
-        sessionId,
-        type: 'input',
-        timestamp: new Date(),
-        data: { input },
-      });
-
-      this.logger.debug(
-        `Sent input to AWS SSM session ${sessionId}: ${input.substring(0, 100)}${input.length > 100 ? '...' : ''}`
-      );
-    } catch (error) {
-      this.logger.error(
-        `Failed to send input to AWS SSM session ${sessionId}:`,
-        error
-      );
-      throw error;
-    }
+    return this.awsSSMSessionManager.sendInput(sessionId, input);
   }
 
   /**
@@ -7659,75 +5661,38 @@ export class ConsoleManager
   }
 
   /**
-   * Discover available serial devices
+   * Discover available serial devices — delegates to SerialSessionManager
    */
   async discoverSerialDevices(): Promise<unknown[]> {
-    try {
-      // Initialize serial protocol if not already done
-      if (!this.serialProtocol) {
-        this.serialProtocol =
-          await this.protocolFactory.createProtocol('serial');
-        this.setupSerialProtocolEventHandlers();
-      }
-
-      return await this.serialProtocol.discoverDevices();
-    } catch (error) {
-      this.logger.error('Failed to discover serial devices:', error);
-      throw error;
-    }
+    return this.serialSessionManager.discoverSerialDevices();
   }
 
   /**
-   * Get serial connection status for a session
+   * Get serial connection status — delegates to SerialSessionManager
    */
   getSerialConnectionStatus(sessionId: string): unknown {
-    if (!this.serialProtocol) {
-      return null;
-    }
-
-    return this.serialProtocol.getConnectionStatus(sessionId);
+    return this.serialSessionManager.getSerialConnectionStatus(sessionId);
   }
 
   /**
-   * Perform device reset on a serial session (e.g., Arduino reset)
+   * Reset serial device — delegates to SerialSessionManager
    */
   async resetSerialDevice(sessionId: string): Promise<void> {
-    if (!this.serialProtocol) {
-      throw new Error('Serial protocol not initialized');
-    }
-
-    try {
-      await this.serialProtocol.performDeviceReset(sessionId);
-      this.logger.info(
-        `Device reset performed for serial session ${sessionId}`
-      );
-    } catch (error) {
-      this.logger.error(
-        `Failed to reset device for session ${sessionId}:`,
-        error
-      );
-      throw error;
-    }
+    return this.serialSessionManager.resetSerialDevice(sessionId);
   }
 
   /**
-   * Get output buffer for serial session
+   * Get serial output buffer — delegates to SerialSessionManager
    */
   getSerialOutputBuffer(sessionId: string, limit?: number): unknown[] {
-    if (!this.serialProtocol) {
-      return [];
-    }
-
-    return this.serialProtocol.getOutputBuffer(sessionId, limit);
+    return this.serialSessionManager.getSerialOutputBuffer(sessionId, limit);
   }
 
   /**
-   * Clear output buffer for serial session
+   * Clear serial output buffer — delegates to SerialSessionManager
    */
   clearSerialOutputBuffer(sessionId: string): void {
-    if (this.serialProtocol) {
-      this.serialProtocol.clearOutputBuffer(sessionId);
-    }
+    this.serialSessionManager.clearSerialOutputBuffer(sessionId);
   }
 
   async destroy() {
@@ -7773,12 +5738,25 @@ export class ConsoleManager
     // Clean up retry and error recovery systems
     this.retryManager.destroy();
     this.errorRecovery.destroy();
+    this.timeoutRecoveryManager.dispose();
 
-    // Clean up serial protocol
-    if (this.serialProtocol) {
-      await this.serialProtocol.cleanup();
-      this.logger.info('Serial protocol cleaned up');
-    }
+    // Clean up serial session manager
+    await this.serialSessionManager.destroy();
+
+    // Clean up WebSocket terminal session manager
+    await this.wsTerminalSessionManager.destroy();
+
+    // Clean up Azure session manager
+    await this.azureSessionManager.destroy();
+
+    // Clean up AWS SSM session manager
+    await this.awsSSMSessionManager.destroy();
+
+    // Clean up Kubernetes session manager
+    await this.kubernetesSessionManager.destroy();
+
+    // Clean up RDP session manager
+    await this.rdpSessionManager.destroy();
 
     // Clean up all cached protocols
     for (const [type, protocol] of this.protocolCache) {
@@ -7792,14 +5770,12 @@ export class ConsoleManager
 
     // Clean up legacy protocol instances
     const legacyProtocols: Array<{ name: string; instance: any }> = [
-      { name: 'docker', instance: this.dockerProtocol },
-      { name: 'kubernetes', instance: this.kubernetesProtocol },
-      { name: 'aws-ssm', instance: this.awsSSMProtocol },
-      { name: 'azure', instance: this.azureProtocol },
-      { name: 'rdp', instance: this.rdpProtocol },
+      // kubernetes — removed, now managed by KubernetesSessionManager
+      // aws-ssm — removed, now managed by AWSSSMSessionManager
+      // azure — removed, now managed by AzureSessionManager
+      // rdp — removed, now managed by RDPSessionManager
       { name: 'wsl', instance: this.wslProtocol },
       { name: 'ansible', instance: this.ansibleProtocol },
-      { name: 'websocket-terminal', instance: this.webSocketTerminalProtocol },
     ];
     for (const { name, instance } of legacyProtocols) {
       if (instance && typeof instance.cleanup === 'function') {
@@ -7817,12 +5793,11 @@ export class ConsoleManager
     this.vncProtocols?.clear();
     this.ipcProtocols?.clear();
     this.ipmiProtocols?.clear();
-    this.rdpSessions?.clear();
+    // rdpSessions — removed, now managed by RDPSessionManager
     this.winrmSessions?.clear();
     this.vncSessions?.clear();
     this.ipcSessions?.clear();
     this.ipmiSessions?.clear();
-    this.webSocketTerminalSessions?.clear();
 
     // Shutdown self-healing components
     if (this.selfHealingEnabled) {
@@ -8295,7 +6270,7 @@ export class ConsoleManager
               isInteractive: true,
               sessionUnresponsive: shouldTrigger.urgency === 'high',
               pendingCommands,
-              timeoutCount: this.timeoutRecoveryAttempts.get(sessionId) || 0,
+              timeoutCount: this.timeoutRecoveryManager.getRecoveryAttempts(sessionId),
             });
 
             // Trigger appropriate recovery based on urgency
@@ -8523,317 +6498,61 @@ export class ConsoleManager
     return Math.min(cost, 1.0); // Cap at 1.0
   }
 
-  /**
-   * Setup Azure protocol integration
-   */
-  private setupAzureIntegration(): void {
-    this.azureProtocol.on('connected', (sessionId: string) => {
-      this.logger.info(`Azure session connected: ${sessionId}`);
-      this.emit('azure-connected', { sessionId });
-      // Record successful connection for monitoring
-      this.azureMonitoring.recordConnectionEvent(sessionId, 'success');
-    });
-
-    this.azureProtocol.on('disconnected', (sessionId: string) => {
-      this.logger.info(`Azure session disconnected: ${sessionId}`);
-      this.emit('azure-disconnected', { sessionId });
-      // Unregister from monitoring
-      this.azureMonitoring.unregisterSession(sessionId);
-    });
-
-    this.azureProtocol.on('error', (sessionId: string, error: Error) => {
-      this.logger.error(`Azure session error: ${sessionId}`, error);
-      this.emit('azure-error', { sessionId, error });
-
-      // Record error for monitoring
-      if (error.message.includes('auth')) {
-        this.azureMonitoring.recordErrorEvent('authentication', error);
-      } else if (error.message.includes('network')) {
-        this.azureMonitoring.recordErrorEvent('network', error);
-      } else {
-        this.azureMonitoring.recordErrorEvent('api', error);
-      }
-
-      // Record connection failure
-      this.azureMonitoring.recordConnectionEvent(sessionId, 'failure');
-    });
-
-    this.azureProtocol.on('output', (sessionId: string, output: ConsoleOutput) => {
-      // Forward Azure output to the console system
-      const outputBuffer = this.outputBuffers.get(sessionId) || [];
-      outputBuffer.push(output);
-
-      if (outputBuffer.length > this.maxBufferSize) {
-        outputBuffer.shift();
-      }
-
-      this.outputBuffers.set(sessionId, outputBuffer);
-      this.emit('console-event', {
-        sessionId,
-        type: 'output',
-        timestamp: new Date(),
-        data: output,
-      });
-    });
-
-    this.azureProtocol.on('token-refreshed', (sessionId: string, tokenInfo: AzureTokenInfo) => {
-      this.logger.debug(`Azure token refreshed for session: ${sessionId}`);
-      this.emit('azure-token-refreshed', { sessionId, tokenInfo });
-      // Record token refresh for monitoring
-      this.azureMonitoring.recordAuthenticationEvent(
-        'token-refresh',
-        tokenInfo
-      );
-    });
-
-    this.azureProtocol.on('session-ready', (sessionId: string) => {
-      this.logger.info(`Azure session ready: ${sessionId}`);
-      this.emit('azure-session-ready', { sessionId });
-    });
-
-    this.azureProtocol.on('reconnecting', (sessionId: string, attempt: number) => {
-      this.logger.info(
-        `Azure session reconnecting: ${sessionId} (attempt ${attempt})`
-      );
-      this.emit('azure-reconnecting', { sessionId, attempt });
-    });
-
-    this.logger.info('Azure protocol integration setup completed');
-  }
+  // setupAzureIntegration() — removed, now in AzureSessionManager.setupEventHandlers()
+  // createAzureCloudShellSession() — removed, now in AzureSessionManager.createCloudShellSession()
+  // createAzureBastionSession() — removed, now in AzureSessionManager.createBastionSession()
+  // createAzureArcSession() — removed, now in AzureSessionManager.createArcSession()
 
   /**
-   * Create Azure Cloud Shell session
-   */
-  private async createAzureCloudShellSession(
-    sessionId: string,
-    options: SessionOptions
-  ): Promise<string> {
-    if (!options.azureOptions) {
-      throw new Error(
-        'Azure options are required for Azure Cloud Shell session'
-      );
-    }
-
-    try {
-      this.logger.info(`Creating Azure Cloud Shell session: ${sessionId}`);
-
-      const azureSession = await this.azureProtocol.createCloudShellSession(
-        sessionId,
-        options.azureOptions
-      );
-
-      // Register session with monitoring
-      this.azureMonitoring.registerSession(azureSession);
-
-      // Store session information
-      const session = this.sessions.get(sessionId);
-      if (session) {
-        session.status = 'running';
-        session.type = 'azure-shell';
-        this.sessions.set(sessionId, session);
-      }
-
-      // Register with monitoring systems
-      await this.registerSessionWithHealthMonitoring(
-        sessionId,
-        session!,
-        options
-      );
-
-      this.logger.info(
-        `Azure Cloud Shell session created successfully: ${sessionId}`
-      );
-      return sessionId;
-    } catch (error) {
-      this.logger.error(
-        `Failed to create Azure Cloud Shell session: ${sessionId}`,
-        error
-      );
-      throw error;
-    }
-  }
-
-  /**
-   * Create Azure Bastion session
-   */
-  private async createAzureBastionSession(
-    sessionId: string,
-    options: SessionOptions
-  ): Promise<string> {
-    if (!options.azureOptions) {
-      throw new Error('Azure options are required for Azure Bastion session');
-    }
-
-    try {
-      this.logger.info(`Creating Azure Bastion session: ${sessionId}`);
-
-      const azureSession = await this.azureProtocol.createBastionSession(
-        sessionId,
-        options.azureOptions
-      );
-
-      // Register session with monitoring
-      this.azureMonitoring.registerSession(azureSession);
-
-      // Store session information
-      const session = this.sessions.get(sessionId);
-      if (session) {
-        session.status = 'running';
-        session.type = 'azure-bastion';
-        this.sessions.set(sessionId, session);
-      }
-
-      // Register with monitoring systems
-      await this.registerSessionWithHealthMonitoring(
-        sessionId,
-        session!,
-        options
-      );
-
-      this.logger.info(
-        `Azure Bastion session created successfully: ${sessionId}`
-      );
-      return sessionId;
-    } catch (error) {
-      this.logger.error(
-        `Failed to create Azure Bastion session: ${sessionId}`,
-        error
-      );
-      throw error;
-    }
-  }
-
-  /**
-   * Create Azure Arc session
-   */
-  private async createAzureArcSession(
-    sessionId: string,
-    options: SessionOptions
-  ): Promise<string> {
-    if (!options.azureOptions) {
-      throw new Error('Azure options are required for Azure Arc session');
-    }
-
-    try {
-      this.logger.info(`Creating Azure Arc session: ${sessionId}`);
-
-      const azureSession = await this.azureProtocol.createArcSession(
-        sessionId,
-        options.azureOptions
-      );
-
-      // Register session with monitoring
-      this.azureMonitoring.registerSession(azureSession);
-
-      // Store session information
-      const session = this.sessions.get(sessionId);
-      if (session) {
-        session.status = 'running';
-        session.type = 'azure-ssh';
-        this.sessions.set(sessionId, session);
-      }
-
-      // Register with monitoring systems
-      await this.registerSessionWithHealthMonitoring(
-        sessionId,
-        session!,
-        options
-      );
-
-      this.logger.info(`Azure Arc session created successfully: ${sessionId}`);
-      return sessionId;
-    } catch (error) {
-      this.logger.error(
-        `Failed to create Azure Arc session: ${sessionId}`,
-        error
-      );
-      throw error;
-    }
-  }
-
-  /**
-   * Send input to Azure session
+   * Send input to Azure session (delegates to AzureSessionManager)
    */
   private async sendInputToAzureSession(
     sessionId: string,
     input: string
   ): Promise<void> {
-    try {
-      await this.azureProtocol.sendInput(sessionId, input);
-    } catch (error) {
-      this.logger.error(
-        `Failed to send input to Azure session ${sessionId}:`,
-        error
-      );
-      throw error;
-    }
+    return this.azureSessionManager.sendInput(sessionId, input);
   }
 
   /**
-   * Cleanup Azure session
+   * Cleanup Azure session (delegates to AzureSessionManager)
    */
   private async cleanupAzureSession(sessionId: string): Promise<void> {
-    try {
-      await this.azureProtocol.closeSession(sessionId);
-      this.logger.info(`Azure session cleaned up: ${sessionId}`);
-    } catch (error) {
-      this.logger.error(`Failed to cleanup Azure session ${sessionId}:`, error);
-    }
+    return this.azureSessionManager.cleanupSession(sessionId);
   }
 
   /**
-   * Handle Azure session based on console type
+   * Handle Azure session based on console type (delegates to AzureSessionManager)
    */
   private async createAzureSession(
     sessionId: string,
     options: SessionOptions
   ): Promise<string> {
-    const consoleType = options.consoleType || 'azure-shell';
-
-    switch (consoleType) {
-      case 'azure-shell':
-        return await this.createAzureCloudShellSession(sessionId, options);
-
-      case 'azure-bastion':
-        return await this.createAzureBastionSession(sessionId, options);
-
-      case 'azure-ssh':
-        return await this.createAzureArcSession(sessionId, options);
-
-      default:
-        // Default to Cloud Shell if Azure options provided but type unclear
-        return await this.createAzureCloudShellSession(sessionId, options);
-    }
+    return this.azureSessionManager.createSession(sessionId, options);
   }
 
   /**
-   * Get Azure session metrics and health
+   * Get Azure session metrics and health (delegates to AzureSessionManager)
    */
   getAzureSessionMetrics(sessionId: string): Record<string, unknown> {
-    return this.azureProtocol.getSessionMetrics(sessionId);
+    return this.azureSessionManager.getSessionMetrics(sessionId);
   }
 
   /**
-   * Check Azure session health
+   * Check Azure session health (delegates to AzureSessionManager)
    */
   async checkAzureSessionHealth(sessionId: string): Promise<boolean> {
-    return await this.azureProtocol.healthCheck(sessionId);
+    return this.azureSessionManager.checkSessionHealth(sessionId);
   }
 
   /**
-   * Resize Azure session terminal
+   * Resize Azure session terminal (delegates to AzureSessionManager)
    */
   async resizeAzureSession(
     sessionId: string,
     rows: number,
     cols: number
   ): Promise<void> {
-    try {
-      await this.azureProtocol.resizeTerminal(sessionId, rows, cols);
-    } catch (error) {
-      this.logger.error(`Failed to resize Azure session ${sessionId}:`, error);
-      throw error;
-    }
+    return this.azureSessionManager.resizeSession(sessionId, rows, cols);
   }
 
   /**
@@ -8889,279 +6608,32 @@ export class ConsoleManager
   }
 
   /**
-   * Get Azure monitoring metrics
+   * Get Azure monitoring metrics (delegates to AzureSessionManager)
    */
   getAzureMonitoringMetrics() {
-    return this.azureMonitoring.getMetrics();
+    return this.azureSessionManager.getMonitoringMetrics();
   }
 
   /**
-   * Perform Azure health check
+   * Perform Azure health check (delegates to AzureSessionManager)
    */
   async performAzureHealthCheck() {
-    return await this.azureMonitoring.performHealthCheck();
+    return await this.azureSessionManager.performHealthCheck();
   }
 
   /**
-   * Update Azure cost estimates for a session
+   * Update Azure cost estimates for a session (delegates to AzureSessionManager)
    */
   updateAzureCostEstimate(sessionId: string, costEstimate: number) {
-    this.azureMonitoring.updateCostEstimates(sessionId, costEstimate);
+    this.azureSessionManager.updateCostEstimate(sessionId, costEstimate);
   }
 
-  /**
-   * Setup RDP protocol integration
-   */
-  private setupRDPIntegration(): void {
-    this.rdpProtocol.on('connected', (session: RDPSession) => {
-      this.logger.info(`RDP session connected: ${session.sessionId}`);
-      this.rdpSessions.set(session.sessionId, session);
-      this.emit('rdp-connected', { sessionId: session.sessionId, session });
-    });
+  // setupRDPIntegration() — removed, now in RDPSessionManager.setupEventHandlers()
+  // handleRDPOutput() — removed, now in RDPSessionManager.handleOutput()
 
-    this.rdpProtocol.on(
-      'disconnected',
-      (sessionId: string, reason?: string) => {
-        this.logger.info(`RDP session disconnected: ${sessionId}`, { reason });
-        this.rdpSessions.delete(sessionId);
-        this.emit('rdp-disconnected', { sessionId, reason });
-      }
-    );
-
-    this.rdpProtocol.on('error', (sessionId: string, error: Error) => {
-      this.logger.error(`RDP session error: ${sessionId}`, error);
-      this.emit('rdp-error', { sessionId, error });
-    });
-
-    this.rdpProtocol.on('output', (output: ConsoleOutput) => {
-      this.handleRDPOutput(output);
-    });
-
-    this.rdpProtocol.on(
-      'screen-update',
-      (sessionId: string, imageData: Buffer) => {
-        this.emit('rdp-screen-update', { sessionId, imageData });
-      }
-    );
-
-    this.rdpProtocol.on(
-      'clipboard-data',
-      (sessionId: string, data: string, format: string) => {
-        this.emit('rdp-clipboard-data', { sessionId, data, format });
-      }
-    );
-
-    this.rdpProtocol.on(
-      'file-transfer-progress',
-      (sessionId: string, progress: unknown) => {
-        this.emit('rdp-file-transfer-progress', { sessionId, progress });
-      }
-    );
-
-    this.rdpProtocol.on(
-      'performance-metrics',
-      (sessionId: string, metrics: unknown) => {
-        this.emit('rdp-performance-metrics', { sessionId, metrics });
-      }
-    );
-
-    this.logger.info('RDP Protocol integration initialized');
-  }
-
-  /**
-   * Setup WebSocket Terminal protocol integration
-   */
-  private setupWebSocketTerminalIntegration(): void {
-    this.webSocketTerminalProtocol.on(
-      'session_connected',
-      (data: { sessionId: string }) => {
-        this.logger.info(
-          `WebSocket terminal session connected: ${data.sessionId}`
-        );
-        this.emit('websocket-terminal-connected', data);
-      }
-    );
-
-    this.webSocketTerminalProtocol.on(
-      'session_disconnected',
-      (data: { sessionId: string }) => {
-        this.logger.info(
-          `WebSocket terminal session disconnected: ${data.sessionId}`
-        );
-        this.webSocketTerminalSessions.delete(data.sessionId);
-        this.emit('websocket-terminal-disconnected', data);
-      }
-    );
-
-    this.webSocketTerminalProtocol.on(
-      'session_reconnecting',
-      (data: { sessionId: string }) => {
-        this.logger.info(
-          `WebSocket terminal session reconnecting: ${data.sessionId}`
-        );
-        this.emit('websocket-terminal-reconnecting', data);
-      }
-    );
-
-    this.webSocketTerminalProtocol.on(
-      'data',
-      (data: { sessionId: string; data: string | Buffer }) => {
-        this.handleWebSocketTerminalOutput(data.sessionId, data.data);
-      }
-    );
-
-    this.webSocketTerminalProtocol.on(
-      'error',
-      (data: { sessionId: string; error: Error }) => {
-        this.logger.error(
-          `WebSocket terminal session error: ${data.sessionId}`,
-          data.error
-        );
-        this.emit('websocket-terminal-error', data);
-
-        // Attempt automatic recovery
-        this.attemptWebSocketTerminalRecovery(data.sessionId, data.error);
-      }
-    );
-
-    this.webSocketTerminalProtocol.on(
-      'file_transfer_progress',
-      (data: { sessionId: string; transfer: unknown }) => {
-        this.emit('websocket-terminal-file-transfer-progress', data);
-      }
-    );
-
-    this.webSocketTerminalProtocol.on(
-      'multiplex_session_created',
-      (data: { sessionId: string; multiplexSession: unknown }) => {
-        this.emit('websocket-terminal-multiplex-session-created', data);
-      }
-    );
-
-    this.logger.info('WebSocket Terminal Protocol integration initialized');
-  }
-
-  /**
-   * Handle WebSocket Terminal output
-   */
-  private handleWebSocketTerminalOutput(
-    sessionId: string,
-    data: string | Buffer
-  ): void {
-    const output: ConsoleOutput = {
-      sessionId,
-      type: 'stdout',
-      data: typeof data === 'string' ? data : data.toString('utf8'),
-      timestamp: new Date(),
-      raw: typeof data === 'string' ? data : data.toString('utf8'),
-    };
-
-    // Store output in buffer
-    if (!this.outputBuffers.has(sessionId)) {
-      this.outputBuffers.set(sessionId, []);
-    }
-    const buffer = this.outputBuffers.get(sessionId)!;
-    buffer.push(output);
-
-    // Limit buffer size
-    if (buffer.length > this.maxBufferSize) {
-      buffer.shift();
-    }
-
-    // Emit output event
-    this.emit('output', output);
-
-    // Update session last activity
-    const wsSession = this.webSocketTerminalSessions.get(sessionId);
-    if (wsSession) {
-      wsSession.lastActivity = new Date();
-      this.webSocketTerminalSessions.set(sessionId, wsSession);
-    }
-
-    // Update session in main sessions map
-    const session = this.sessions.get(sessionId);
-    if (session) {
-      // Update command execution if there's an active command
-      const activeCommands = Array.from(session.activeCommands.values());
-      if (activeCommands.length > 0) {
-        const latestCommand = activeCommands[activeCommands.length - 1];
-        if (latestCommand.status === 'executing') {
-          latestCommand.output.push(output);
-        }
-      }
-    }
-  }
-
-  /**
-   * Attempt WebSocket Terminal recovery
-   */
-  private async attemptWebSocketTerminalRecovery(
-    sessionId: string,
-    error: Error
-  ): Promise<void> {
-    try {
-      this.logger.info(
-        `Attempting WebSocket terminal recovery for session: ${sessionId}`
-      );
-
-      const session = this.sessions.get(sessionId);
-      if (!session || !session.webSocketTerminalOptions) {
-        this.logger.warn(
-          `Cannot recover WebSocket terminal session ${sessionId}: session or options not found`
-        );
-        return;
-      }
-
-      // Close existing session
-      await this.webSocketTerminalProtocol.closeSession(sessionId);
-
-      // Wait a moment before reconnecting
-      await new Promise((resolve) => setTimeout(resolve, 1000));
-
-      // Recreate session
-      const wsSession = await this.webSocketTerminalProtocol.createSession(
-        sessionId,
-        session.webSocketTerminalOptions
-      );
-      this.webSocketTerminalSessions.set(sessionId, wsSession.state);
-
-      this.logger.info(
-        `WebSocket terminal session ${sessionId} recovered successfully`
-      );
-      this.emit('websocket-terminal-recovered', { sessionId });
-    } catch (recoveryError) {
-      this.logger.error(
-        `Failed to recover WebSocket terminal session ${sessionId}:`,
-        recoveryError
-      );
-      this.emit('websocket-terminal-recovery-failed', {
-        sessionId,
-        error: recoveryError,
-      });
-    }
-  }
-
-  /**
-   * Handle RDP output
-   */
-  private handleRDPOutput(output: ConsoleOutput): void {
-    // Store output in buffer
-    if (!this.outputBuffers.has(output.sessionId)) {
-      this.outputBuffers.set(output.sessionId, []);
-    }
-    const buffer = this.outputBuffers.get(output.sessionId)!;
-    buffer.push(output);
-
-    // Emit output event
-    this.emit('output', output);
-
-    // Update session last activity
-    const rdpSession = this.rdpSessions.get(output.sessionId);
-    if (rdpSession) {
-      rdpSession.lastActivity = new Date();
-      this.rdpSessions.set(output.sessionId, rdpSession);
-    }
-  }
+  // setupWebSocketTerminalIntegration() — removed, now in WebSocketTerminalSessionManager.setupEventHandlers()
+  // handleWebSocketTerminalOutput() — removed, now in WebSocketTerminalSessionManager.handleOutput()
+  // attemptWebSocketTerminalRecovery() — removed, now in WebSocketTerminalSessionManager.attemptRecovery()
 
   /**
    * Handle WinRM output
@@ -9200,58 +6672,13 @@ export class ConsoleManager
   }
 
   /**
-   * Create RDP session
+   * Create RDP session — delegates to RDPSessionManager
    */
   private async createRDPSession(
     sessionId: string,
     options: SessionOptions
   ): Promise<string> {
-    if (!options.rdpOptions) {
-      throw new Error('RDP options are required for RDP session');
-    }
-
-    try {
-      this.logger.info(`Creating RDP session ${sessionId}`, {
-        host: options.rdpOptions.host,
-        port: options.rdpOptions.port,
-        username: options.rdpOptions.username,
-      });
-
-      // Create RDP session through the protocol
-      const rdpSession = await this.rdpProtocol.createSession({
-        command: 'rdp',
-        ...options.rdpOptions,
-      });
-
-      // Update console session
-      const session = this.sessions.get(sessionId);
-      if (session) {
-        session.status = 'running';
-        session.pid = undefined; // RDP sessions don't have PIDs
-        this.sessions.set(sessionId, session);
-      }
-
-      // Register with session manager
-      await this.sessionManager.updateSessionStatus(sessionId, 'running', {
-        rdpHost: options.rdpOptions.host,
-        rdpPort: options.rdpOptions.port,
-        protocol: options.rdpOptions.protocol,
-      });
-
-      this.logger.info(`RDP session ${sessionId} created successfully`);
-      return sessionId;
-    } catch (error) {
-      this.logger.error(`Failed to create RDP session ${sessionId}:`, error);
-
-      // Update session status to failed
-      const session = this.sessions.get(sessionId);
-      if (session) {
-        session.status = 'crashed';
-        this.sessions.set(sessionId, session);
-      }
-
-      throw error;
-    }
+    return this.rdpSessionManager.createSession(sessionId, options);
   }
 
   /**
@@ -9596,41 +7023,25 @@ export class ConsoleManager
   }
 
   /**
-   * Send input to RDP session
+   * Send input to RDP session — delegates to RDPSessionManager
    */
   async sendRDPInput(sessionId: string, input: string): Promise<void> {
-    try {
-      await this.rdpProtocol.sendInput(sessionId, input);
-    } catch (error) {
-      this.logger.error(
-        `Failed to send input to RDP session ${sessionId}:`,
-        error
-      );
-      throw error;
-    }
+    return this.rdpSessionManager.sendInput(sessionId, input);
   }
 
   /**
-   * Send clipboard data to RDP session
+   * Send clipboard data to RDP session — delegates to RDPSessionManager
    */
   async sendRDPClipboardData(
     sessionId: string,
     data: string,
     format: string = 'text'
   ): Promise<void> {
-    try {
-      await this.rdpProtocol.sendClipboardData(sessionId, data, format);
-    } catch (error) {
-      this.logger.error(
-        `Failed to send clipboard data to RDP session ${sessionId}:`,
-        error
-      );
-      throw error;
-    }
+    return this.rdpSessionManager.sendClipboardData(sessionId, data, format);
   }
 
   /**
-   * Start file transfer in RDP session
+   * Start file transfer in RDP session — delegates to RDPSessionManager
    */
   async startRDPFileTransfer(
     sessionId: string,
@@ -9638,50 +7049,33 @@ export class ConsoleManager
     remotePath: string,
     direction: 'upload' | 'download'
   ): Promise<string> {
-    try {
-      return await this.rdpProtocol.startFileTransfer(
-        sessionId,
-        localPath,
-        remotePath,
-        direction
-      );
-    } catch (error) {
-      this.logger.error(
-        `Failed to start file transfer in RDP session ${sessionId}:`,
-        error
-      );
-      throw error;
-    }
+    return this.rdpSessionManager.startFileTransfer(
+      sessionId,
+      localPath,
+      remotePath,
+      direction
+    );
   }
 
   /**
-   * Get RDP session information
+   * Get RDP session information — delegates to RDPSessionManager
    */
   getRDPSession(sessionId: string): RDPSession | undefined {
-    return this.rdpSessions.get(sessionId);
+    return this.rdpSessionManager.getSession(sessionId);
   }
 
   /**
-   * Get RDP protocol capabilities
+   * Get RDP protocol capabilities — delegates to RDPSessionManager
    */
-  getRDPCapabilities(): unknown {
-    return this.rdpProtocol.getCapabilities();
+  getRDPCapabilities(): Promise<unknown> {
+    return this.rdpSessionManager.getCapabilities();
   }
 
   /**
-   * Disconnect RDP session
+   * Disconnect RDP session — delegates to RDPSessionManager
    */
   async disconnectRDPSession(sessionId: string): Promise<void> {
-    try {
-      await this.rdpProtocol.disconnectSession(sessionId);
-      this.rdpSessions.delete(sessionId);
-    } catch (error) {
-      this.logger.error(
-        `Failed to disconnect RDP session ${sessionId}:`,
-        error
-      );
-      throw error;
-    }
+    return this.rdpSessionManager.disconnectSession(sessionId);
   }
 
   // SFTP/SCP Protocol Methods
@@ -10036,149 +7430,8 @@ export class ConsoleManager
     }
   }
 
-  /**
-   * Send input to WebSocket terminal session
-   */
-  private async sendInputToWebSocketTerminal(
-    sessionId: string,
-    input: string
-  ): Promise<void> {
-    try {
-      const session = this.sessions.get(sessionId);
-      if (!session) {
-        throw new Error(`WebSocket terminal session ${sessionId} not found`);
-      }
-
-      const webSocketSession = this.webSocketTerminalSessions.get(sessionId);
-      if (!webSocketSession) {
-        throw new Error(
-          `WebSocket terminal session state ${sessionId} not found`
-        );
-      }
-
-      this.logger.debug(
-        `Sending input to WebSocket terminal session ${sessionId}: ${input.substring(0, 50)}...`
-      );
-
-      // Send input through WebSocket terminal protocol
-      await this.webSocketTerminalProtocol.sendInput(sessionId, input);
-
-      // Update session state
-      webSocketSession.lastActivity = new Date();
-      webSocketSession.bytesTransferred += input.length;
-      this.webSocketTerminalSessions.set(sessionId, webSocketSession);
-
-      // Update session activity
-      await this.sessionManager.updateSessionActivity(sessionId, {
-        lastActivity: new Date(),
-        bytesTransferred: webSocketSession.bytesTransferred,
-        inputCount: (webSocketSession as any).inputCount
-          ? (webSocketSession as any).inputCount + 1
-          : 1,
-      });
-    } catch (error) {
-      this.logger.error(
-        `Failed to send input to WebSocket terminal session ${sessionId}:`,
-        error
-      );
-
-      // If it's a connection error, try to reconnect
-      if (
-        error.message.includes('connection') ||
-        error.message.includes('websocket')
-      ) {
-        const webSocketSession = this.webSocketTerminalSessions.get(sessionId);
-        if (webSocketSession && webSocketSession.supportsReconnection) {
-          this.logger.info(
-            `Attempting to reconnect WebSocket terminal session ${sessionId}`
-          );
-          try {
-            await this.webSocketTerminalProtocol.reconnectSession(sessionId);
-            // Retry sending the input after reconnection
-            await this.webSocketTerminalProtocol.sendInput(sessionId, input);
-            return;
-          } catch (reconnectError) {
-            this.logger.error(
-              `Failed to reconnect WebSocket terminal session ${sessionId}:`,
-              reconnectError
-            );
-          }
-        }
-      }
-
-      throw error;
-    }
-  }
-
-  /**
-   * Create WebSocket Terminal session
-   */
-  private async createWebSocketTerminalSession(
-    sessionId: string,
-    session: ConsoleSession,
-    options: SessionOptions
-  ): Promise<string> {
-    if (!options.webSocketTerminalOptions) {
-      throw new Error(
-        'WebSocket Terminal options are required for WebSocket Terminal session'
-      );
-    }
-
-    try {
-      this.logger.info(`Creating WebSocket Terminal session ${sessionId}`, {
-        url: options.webSocketTerminalOptions.url,
-        protocol: options.webSocketTerminalOptions.protocol,
-        terminalType: options.webSocketTerminalOptions.terminalType,
-      });
-
-      // Create WebSocket Terminal session through the protocol
-      const wsTerminalSession =
-        await this.webSocketTerminalProtocol.createSession(
-          sessionId,
-          options.webSocketTerminalOptions
-        );
-
-      // Store WebSocket terminal session state
-      this.webSocketTerminalSessions.set(sessionId, wsTerminalSession.state);
-
-      // Update console session
-      session.status = 'running';
-      session.pid = undefined; // WebSocket terminal sessions don't have PIDs
-      session.webSocketTerminalState = wsTerminalSession.state;
-      this.sessions.set(sessionId, session);
-
-      // Register with session manager
-      await this.sessionManager.updateSessionStatus(sessionId, 'running', {
-        webSocketUrl: options.webSocketTerminalOptions.url,
-        protocol: options.webSocketTerminalOptions.protocol,
-        terminalType: options.webSocketTerminalOptions.terminalType,
-        terminalSize: {
-          cols: options.webSocketTerminalOptions.cols || 80,
-          rows: options.webSocketTerminalOptions.rows || 24,
-        },
-      });
-
-      this.logger.info(
-        `WebSocket Terminal session ${sessionId} created successfully`
-      );
-      return sessionId;
-    } catch (error) {
-      this.logger.error(
-        `Failed to create WebSocket Terminal session ${sessionId}:`,
-        error
-      );
-
-      // Update session status to failed
-      session.status = 'crashed';
-      this.sessions.set(sessionId, session);
-
-      await this.sessionManager.updateSessionStatus(sessionId, 'failed', {
-        error: error instanceof Error ? error.message : String(error),
-      });
-
-      throw error;
-    }
-  }
+  // sendInputToWebSocketTerminal() — removed, now in WebSocketTerminalSessionManager.sendInput()
+  // createWebSocketTerminalSession() — removed, now in WebSocketTerminalSessionManager.createSession()
 
   /**
    * Create IPMI session
