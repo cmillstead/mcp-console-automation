@@ -26,7 +26,6 @@ import {
   RDPConnectionOptions,
   RDPSession,
   WinRMConnectionOptions,
-  WinRMSessionState,
   VNCConnectionOptions,
   VNCSession,
   VNCFramebuffer,
@@ -111,6 +110,8 @@ import { KubernetesSessionManager } from './KubernetesSessionManager.js';
 import { RDPSessionManager } from './RDPSessionManager.js';
 import { IPCSessionManager } from './IPCSessionManager.js';
 import { SFTPSessionManager } from './SFTPSessionManager.js';
+import { WinRMSessionManager } from './WinRMSessionManager.js';
+import { WSLSessionManager } from './WSLSessionManager.js';
 // JobManager functionality integrated into SessionManager
 import PQueue from 'p-queue';
 import { platform } from 'os';
@@ -174,6 +175,10 @@ export class ConsoleManager
   private ipcSessionManager!: IPCSessionManager;
   // SFTP session management — owned by SFTPSessionManager
   private sftpSessionManager!: SFTPSessionManager;
+  // WinRM session management — owned by WinRMSessionManager
+  private winrmSessionManager!: WinRMSessionManager;
+  // WSL session management — owned by WSLSessionManager
+  private wslSessionManager!: WSLSessionManager;
 
   // Convenience getters for sub-components (backwards compat within ConsoleManager)
   private get healthMonitor(): HealthMonitor {
@@ -207,7 +212,7 @@ export class ConsoleManager
   private protocolCache: Map<string, IProtocol> = new Map();
 
   // Legacy protocol instances (to be fully migrated)
-  private winrmProtocols: Map<string, any>;
+  // winrmProtocols — removed, now managed by WinRMSessionManager
   private vncProtocols: Map<string, any>;
   // ipcProtocols — removed, now managed by IPCSessionManager
   private ipmiProtocols: Map<string, any>;
@@ -216,13 +221,13 @@ export class ConsoleManager
   // azureProtocol — removed, now managed by AzureSessionManager
   // webSocketTerminalProtocol — removed, now managed by WebSocketTerminalSessionManager
   // rdpProtocol — removed, now managed by RDPSessionManager
-  private wslProtocol?: any;
+  // wslProtocol — removed, now managed by WSLSessionManager
   private ansibleProtocol?: any;
 
   // Legacy session tracking (to be migrated)
   // rdpSessions — removed, now managed by RDPSessionManager
   // ipcSessions — removed, now managed by IPCSessionManager
-  private winrmSessions: Map<string, WinRMSessionState>;
+  // winrmSessions — removed, now managed by WinRMSessionManager
   private vncSessions: Map<string, VNCSession>;
   private vncFramebuffers: Map<string, VNCFramebuffer>;
   private ipmiSessions: Map<
@@ -268,8 +273,7 @@ export class ConsoleManager
     this.sessionHealthCheckIntervals = new Map();
 
     // Legacy session tracking (to be fully migrated)
-    this.winrmProtocols = new Map();
-    this.winrmSessions = new Map();
+    // winrmProtocols and winrmSessions — removed, now managed by WinRMSessionManager
     this.vncProtocols = new Map();
     this.vncSessions = new Map();
     // ipcProtocols and ipcSessions — removed, now managed by IPCSessionManager
@@ -403,6 +407,18 @@ export class ConsoleManager
 
     // Initialize SFTP session manager
     this.sftpSessionManager = new SFTPSessionManager(
+      this.buildProtocolSessionHost(),
+      this.logger
+    );
+
+    // Initialize WinRM session manager
+    this.winrmSessionManager = new WinRMSessionManager(
+      this.buildProtocolSessionHost(),
+      this.logger
+    );
+
+    // Initialize WSL session manager
+    this.wslSessionManager = new WSLSessionManager(
       this.buildProtocolSessionHost(),
       this.logger
     );
@@ -4277,74 +4293,13 @@ export class ConsoleManager
   }
 
   /**
-   * Send input to WinRM session
+   * Send input to WinRM session — delegates to WinRMSessionManager
    */
   private async sendInputToWinRM(
     sessionId: string,
     input: string
   ): Promise<void> {
-    const winrmProtocol = this.winrmProtocols.get(sessionId);
-    if (!winrmProtocol) {
-      throw new Error(`WinRM protocol not found for session ${sessionId}`);
-    }
-
-    const session = this.sessions.get(sessionId);
-    if (!session) {
-      throw new Error(`Session ${sessionId} not found`);
-    }
-
-    const winrmSession = this.winrmSessions.get(sessionId);
-    if (!winrmSession) {
-      throw new Error(`WinRM session state not found for session ${sessionId}`);
-    }
-
-    try {
-      // Determine if input is a PowerShell command or regular command
-      const isPowerShellCommand = input
-        .trim()
-        .match(
-          /^(Get-|Set-|New-|Remove-|Invoke-|Import-|Export-|Start-|Stop-|Restart-|Test-|\$)/i
-        );
-
-      if (isPowerShellCommand) {
-        // Execute as PowerShell command
-        await winrmProtocol.executeCommand(sessionId, input.trim());
-        // Output will be handled by the WinRM protocol event system
-      } else {
-        // Execute as regular command
-        await winrmProtocol.executeCommand(sessionId, input.trim());
-        // Output will be handled by the WinRM protocol event system
-      }
-
-      // Update session activity
-      winrmSession.lastActivity = new Date();
-      winrmSession.performanceCounters.commandsExecuted++;
-      this.winrmSessions.set(sessionId, winrmSession);
-
-      // Emit input event
-      this.emitEvent({
-        sessionId,
-        type: 'input',
-        timestamp: new Date(),
-        data: { input, isPowerShell: isPowerShellCommand },
-      });
-
-      this.logger.debug(
-        `Sent input to WinRM session ${sessionId}: ${input.substring(0, 100)}${input.length > 100 ? '...' : ''}`
-      );
-    } catch (error) {
-      // Update error count
-      if (winrmSession) {
-        winrmSession.performanceCounters.errorCount++;
-        this.winrmSessions.set(sessionId, winrmSession);
-      }
-
-      this.logger.error(
-        `Failed to send input to WinRM session ${sessionId}:`,
-        error
-      );
-      throw error;
-    }
+    return this.winrmSessionManager.sendInput(sessionId, input);
   }
 
   async stopSession(sessionId: string): Promise<void> {
@@ -4416,22 +4371,9 @@ export class ConsoleManager
       this.sshClients.delete(sessionId);
     }
 
-    // Handle WinRM sessions (legacy)
+    // Handle WinRM sessions — delegates to WinRMSessionManager
     if (session?.winrmOptions) {
-      try {
-        const winrmProtocol = this.winrmProtocols.get(sessionId);
-        if (winrmProtocol) {
-          await winrmProtocol.closeSession(sessionId);
-          this.winrmProtocols.delete(sessionId);
-        }
-
-        // Clean up WinRM session state
-        this.winrmSessions.delete(sessionId);
-
-        this.logger.info(`WinRM session ${sessionId} stopped and cleaned up`);
-      } catch (error) {
-        this.logger.error(`Error stopping WinRM session ${sessionId}:`, error);
-      }
+      await this.winrmSessionManager.cleanupSession(sessionId);
     }
 
     // Handle regular processes
@@ -5699,6 +5641,12 @@ export class ConsoleManager
     // Clean up SFTP session manager
     await this.sftpSessionManager.destroy();
 
+    // Clean up WinRM session manager
+    await this.winrmSessionManager.destroy();
+
+    // Clean up WSL session manager
+    await this.wslSessionManager.destroy();
+
     // Clean up all cached protocols
     for (const [type, protocol] of this.protocolCache) {
       try {
@@ -5715,7 +5663,7 @@ export class ConsoleManager
       // aws-ssm — removed, now managed by AWSSSMSessionManager
       // azure — removed, now managed by AzureSessionManager
       // rdp — removed, now managed by RDPSessionManager
-      { name: 'wsl', instance: this.wslProtocol },
+      // wsl — removed, now managed by WSLSessionManager
       { name: 'ansible', instance: this.ansibleProtocol },
     ];
     for (const { name, instance } of legacyProtocols) {
@@ -5730,13 +5678,12 @@ export class ConsoleManager
 
     // Clear session maps
     // sftpProtocols — removed, now managed by SFTPSessionManager
-    this.winrmProtocols?.clear();
+    // winrmProtocols and winrmSessions — removed, now managed by WinRMSessionManager
     this.vncProtocols?.clear();
     // ipcProtocols — removed, now managed by IPCSessionManager
     this.ipmiProtocols?.clear();
     // rdpSessions — removed, now managed by RDPSessionManager
     // ipcSessions — removed, now managed by IPCSessionManager
-    this.winrmSessions?.clear();
     this.vncSessions?.clear();
     this.ipmiSessions?.clear();
 
@@ -6529,9 +6476,7 @@ export class ConsoleManager
         // Fallback for specific protocols
         switch (session.type) {
           case 'wsl':
-            if (this.wslProtocol && 'resizeTerminal' in this.wslProtocol) {
-              await this.wslProtocol.resizeTerminal(sessionId, cols, rows);
-            }
+            await this.wslSessionManager.resizeTerminal(sessionId, cols, rows);
             break;
           default:
             this.logger.warn(
@@ -6576,41 +6521,7 @@ export class ConsoleManager
   // handleWebSocketTerminalOutput() — removed, now in WebSocketTerminalSessionManager.handleOutput()
   // attemptWebSocketTerminalRecovery() — removed, now in WebSocketTerminalSessionManager.attemptRecovery()
 
-  /**
-   * Handle WinRM output
-   */
-  private handleWinRMOutput(sessionId: string, output: ConsoleOutput): void {
-    // Store output in buffer
-    if (!this.outputBuffers.has(sessionId)) {
-      this.outputBuffers.set(sessionId, []);
-    }
-    const buffer = this.outputBuffers.get(sessionId)!;
-    buffer.push(output);
-
-    // Update output with sequence number
-    output.sequence = this.commandQueueManager.getNextSequenceNumber(sessionId);
-
-    // Emit output event
-    this.emit('output', output);
-
-    // Update session last activity
-    const winrmSession = this.winrmSessions.get(sessionId);
-    if (winrmSession) {
-      winrmSession.lastActivity = new Date();
-
-      // Update performance counters
-      if (output.data) {
-        winrmSession.performanceCounters.bytesTransferred += output.data.length;
-      }
-
-      this.winrmSessions.set(sessionId, winrmSession);
-    }
-
-    // Log debug information
-    this.logger.debug(
-      `WinRM output for session ${sessionId}: ${output.type} - ${output.data?.substring(0, 100)}${(output.data?.length || 0) > 100 ? '...' : ''}`
-    );
-  }
+  // handleWinRMOutput() — removed, now in WinRMSessionManager.handleOutput()
 
   /**
    * Create RDP session — delegates to RDPSessionManager
@@ -6623,93 +6534,13 @@ export class ConsoleManager
   }
 
   /**
-   * Create WinRM session
+   * Create WinRM session — delegates to WinRMSessionManager
    */
   private async createWinRMSession(
     sessionId: string,
     options: SessionOptions
   ): Promise<string> {
-    if (!options.winrmOptions) {
-      throw new Error('WinRM options are required for WinRM session');
-    }
-
-    try {
-      this.logger.info(`Creating WinRM session ${sessionId}`, {
-        host: options.winrmOptions.host,
-        port: options.winrmOptions.port,
-        username: options.winrmOptions.username,
-        authType: options.winrmOptions.authType,
-      });
-
-      // Create WinRM protocol instance
-      const winrmProtocol = await this.protocolFactory.createProtocol('winrm');
-      this.winrmProtocols.set(sessionId, winrmProtocol);
-
-      // Create WinRM session
-      const winrmSession = await winrmProtocol.createSession(options);
-
-      // Create WinRM session state
-      const winrmSessionState: WinRMSessionState = {
-        sessionId,
-        status: 'running',
-        host: options.winrmOptions.host,
-        port:
-          options.winrmOptions.port ||
-          (options.winrmOptions.protocol === 'https' ? 5986 : 5985),
-        protocol: options.winrmOptions.protocol || 'https',
-        authType: options.winrmOptions.authType || 'negotiate',
-        username: options.winrmOptions.username,
-        connectedAt: new Date(),
-        lastActivity: new Date(),
-        shells: new Map(),
-        activeCommands: new Map(),
-        transferredFiles: [],
-        performanceCounters: {
-          commandsExecuted: 0,
-          bytesTransferred: 0,
-          averageResponseTime: 0,
-          errorCount: 0,
-          reconnections: 0,
-        },
-        isConnected: true,
-      };
-
-      this.winrmSessions.set(sessionId, winrmSessionState);
-
-      // Update console session
-      const session = this.sessions.get(sessionId);
-      if (session) {
-        session.status = 'running';
-        session.pid = undefined; // WinRM sessions don't have PIDs
-        this.sessions.set(sessionId, session);
-      }
-
-      // Register with session manager
-      await this.sessionManager.updateSessionStatus(sessionId, 'running', {
-        winrmHost: options.winrmOptions.host,
-        winrmPort: options.winrmOptions.port,
-        protocol: options.winrmOptions.protocol,
-        authType: options.winrmOptions.authType,
-      });
-
-      this.logger.info(`WinRM session ${sessionId} created successfully`);
-      return sessionId;
-    } catch (error) {
-      this.logger.error(`Failed to create WinRM session ${sessionId}:`, error);
-
-      // Clean up failed session
-      this.winrmProtocols.delete(sessionId);
-      this.winrmSessions.delete(sessionId);
-
-      // Update session status to failed
-      const session = this.sessions.get(sessionId);
-      if (session) {
-        session.status = 'crashed';
-        this.sessions.set(sessionId, session);
-      }
-
-      throw error;
-    }
+    return this.winrmSessionManager.createSession(sessionId, options);
   }
 
   /**
@@ -7061,15 +6892,7 @@ export class ConsoleManager
    * Setup WSL integration
    */
   private async setupWSLIntegration(): Promise<void> {
-    try {
-      // Initialize WSL protocol via factory
-      const protocol = await this.getOrCreateProtocol('wsl');
-      this.wslProtocol = protocol;
-      await this.wslProtocol.initialize();
-      this.logger.info('WSL integration setup completed');
-    } catch (error) {
-      this.logger.warn('WSL integration setup failed:', error);
-    }
+    return this.wslSessionManager.setupWSLIntegration();
   }
 
   /**
@@ -7095,46 +6918,7 @@ export class ConsoleManager
     session: ConsoleSession,
     options: SessionOptions
   ): Promise<string> {
-    try {
-      if (!options.wslOptions) {
-        throw new Error('WSL options are required for WSL session');
-      }
-
-      this.logger.info(
-        `Creating WSL session ${sessionId} with distribution: ${options.wslOptions.distribution || 'default'}`
-      );
-
-      // Create WSL session using the protocol
-      const wslSession = await this.wslProtocol.createSession(options);
-
-      // Update the session with WSL-specific properties
-      const updatedSession = { ...session, ...wslSession };
-      this.sessions.set(sessionId, updatedSession);
-      this.outputBuffers.set(sessionId, []);
-
-      // Setup output streaming if requested
-      if (options.streaming) {
-        const streamManager = new StreamManager(sessionId);
-        this.streamManagers.set(sessionId, streamManager);
-      }
-
-      // Emit session started event
-      this.emitEvent({
-        sessionId,
-        type: 'started',
-        timestamp: new Date(),
-        data: {
-          distribution: options.wslOptions.distribution,
-          wslVersion: options.wslOptions.wslVersion,
-          wsl: true,
-        },
-      });
-
-      return sessionId;
-    } catch (error) {
-      this.logger.error(`Failed to create WSL session ${sessionId}:`, error);
-      throw error;
-    }
+    return this.wslSessionManager.createSession(sessionId, session, options);
   }
 
   /**
@@ -7144,60 +6928,7 @@ export class ConsoleManager
     sessionId: string,
     input: string
   ): Promise<void> {
-    try {
-      const session = this.sessions.get(sessionId);
-      if (!session) {
-        throw new Error(`WSL session ${sessionId} not found`);
-      }
-
-      this.logger.debug(
-        `Sending input to WSL session ${sessionId}: ${input.substring(0, 50)}...`
-      );
-
-      // Send input through WSL protocol - for now we'll use executeCommand
-      // This is a simplified implementation - in production you'd want proper stdin handling
-      const result = await this.wslProtocol.executeCommand(sessionId, input);
-
-      // Create output events for stdout and stderr
-      if (result.stdout) {
-        const output: ConsoleOutput = {
-          sessionId,
-          type: 'stdout',
-          data: result.stdout,
-          timestamp: new Date(),
-          raw: result.stdout,
-        };
-
-        const outputBuffer = this.outputBuffers.get(sessionId) || [];
-        outputBuffer.push(output);
-        this.outputBuffers.set(sessionId, outputBuffer);
-
-        this.emit('output', output);
-      }
-
-      if (result.stderr) {
-        const output: ConsoleOutput = {
-          sessionId,
-          type: 'stderr',
-          data: result.stderr,
-          timestamp: new Date(),
-          raw: result.stderr,
-        };
-
-        const outputBuffer = this.outputBuffers.get(sessionId) || [];
-        outputBuffer.push(output);
-        this.outputBuffers.set(sessionId, outputBuffer);
-
-        this.emit('output', output);
-      }
-
-    } catch (error) {
-      this.logger.error(
-        `Failed to send input to WSL session ${sessionId}:`,
-        error
-      );
-      throw error;
-    }
+    return this.wslSessionManager.sendInput(sessionId, input);
   }
 
   /**
@@ -7206,56 +6937,28 @@ export class ConsoleManager
   async getWSLDistributions(): Promise<
     import('../types/index.js').WSLDistribution[]
   > {
-    try {
-      return await this.wslProtocol.getInstalledDistributions();
-    } catch (error) {
-      this.logger.error('Failed to get WSL distributions:', error);
-      throw error;
-    }
+    return this.wslSessionManager.getWSLDistributions();
   }
 
   /**
    * Get WSL system information
    */
   async getWSLSystemInfo(): Promise<import('../types/index.js').WSLSystemInfo> {
-    try {
-      return await this.wslProtocol.getSystemInfo();
-    } catch (error) {
-      this.logger.error('Failed to get WSL system info:', error);
-      throw error;
-    }
+    return this.wslSessionManager.getWSLSystemInfo();
   }
 
   /**
    * Start WSL distribution
    */
   async startWSLDistribution(distribution: string): Promise<void> {
-    try {
-      await this.wslProtocol.startDistribution(distribution);
-      this.logger.info(`Started WSL distribution: ${distribution}`);
-    } catch (error) {
-      this.logger.error(
-        `Failed to start WSL distribution ${distribution}:`,
-        error
-      );
-      throw error;
-    }
+    return this.wslSessionManager.startWSLDistribution(distribution);
   }
 
   /**
    * Stop WSL distribution
    */
   async stopWSLDistribution(distribution: string): Promise<void> {
-    try {
-      await this.wslProtocol.stopDistribution(distribution);
-      this.logger.info(`Stopped WSL distribution: ${distribution}`);
-    } catch (error) {
-      this.logger.error(
-        `Failed to stop WSL distribution ${distribution}:`,
-        error
-      );
-      throw error;
-    }
+    return this.wslSessionManager.stopWSLDistribution(distribution);
   }
 
   /**
@@ -7264,15 +6967,7 @@ export class ConsoleManager
   async getWSLHealthStatus(
     distribution: string
   ): Promise<import('../types/index.js').WSLHealthStatus> {
-    try {
-      return await this.wslProtocol.getHealthStatus(distribution);
-    } catch (error) {
-      this.logger.error(
-        `Failed to get WSL health status for ${distribution}:`,
-        error
-      );
-      throw error;
-    }
+    return this.wslSessionManager.getWSLHealthStatus(distribution);
   }
 
   /**
@@ -7282,36 +6977,21 @@ export class ConsoleManager
     path: string,
     direction: 'windows-to-linux' | 'linux-to-windows'
   ): Promise<string> {
-    try {
-      return await this.wslProtocol.translatePath(path, direction);
-    } catch (error) {
-      this.logger.error(`Failed to translate WSL path ${path}:`, error);
-      throw error;
-    }
+    return this.wslSessionManager.translateWSLPath(path, direction);
   }
 
   /**
    * Check if WSL is available
    */
   async isWSLAvailable(): Promise<boolean> {
-    try {
-      return await this.wslProtocol.checkWSLAvailability();
-    } catch (error) {
-      this.logger.error('Failed to check WSL availability:', error);
-      return false;
-    }
+    return this.wslSessionManager.isWSLAvailable();
   }
 
   /**
    * Get WSL configuration
    */
   async getWSLConfig(): Promise<import('../types/index.js').WSLConfig> {
-    try {
-      return await this.wslProtocol.getWSLConfig();
-    } catch (error) {
-      this.logger.error('Failed to get WSL configuration:', error);
-      throw error;
-    }
+    return this.wslSessionManager.getWSLConfig();
   }
 
   // sendInputToWebSocketTerminal() — removed, now in WebSocketTerminalSessionManager.sendInput()
