@@ -98,6 +98,8 @@ import {
   TimeoutRecoveryManager,
   TimeoutRecoveryHost,
 } from './TimeoutRecoveryManager.js';
+import { SerialSessionManager } from './SerialSessionManager.js';
+import { ProtocolSessionHost } from './ProtocolSessionManagerBase.js';
 // JobManager functionality integrated into SessionManager
 import PQueue from 'p-queue';
 import { platform } from 'os';
@@ -145,6 +147,9 @@ export class ConsoleManager
   // Timeout recovery — owned by TimeoutRecoveryManager
   private timeoutRecoveryManager!: TimeoutRecoveryManager;
 
+  // Serial session management — owned by SerialSessionManager
+  private serialSessionManager!: SerialSessionManager;
+
   // Convenience getters for sub-components (backwards compat within ConsoleManager)
   private get healthMonitor(): HealthMonitor {
     return this.healthOrchestrator.getHealthMonitor();
@@ -183,7 +188,6 @@ export class ConsoleManager
   private ipcProtocols: Map<string, any>;
   private ipmiProtocols: Map<string, any>;
   private kubernetesProtocol?: any;
-  private serialProtocol?: any;
   private awsSSMProtocol?: any;
   private azureProtocol?: any;
   private webSocketTerminalProtocol?: any;
@@ -333,6 +337,12 @@ export class ConsoleManager
     // Initialize timeout recovery manager
     this.timeoutRecoveryManager = new TimeoutRecoveryManager(
       this.buildTimeoutRecoveryHost(),
+      this.logger
+    );
+
+    // Initialize serial session manager
+    this.serialSessionManager = new SerialSessionManager(
+      this.buildProtocolSessionHost(),
       this.logger
     );
 
@@ -961,6 +971,54 @@ export class ConsoleManager
         this.createSessionBookmark(sessionId, reason),
       getRetryManager: () => this.retryManager,
       getErrorRecovery: () => this.errorRecovery,
+    };
+  }
+
+  /**
+   * Build the shared ProtocolSessionHost interface for protocol session managers.
+   * Reused by SerialSessionManager and future protocol session managers.
+   */
+  private buildProtocolSessionHost(): ProtocolSessionHost {
+    return {
+      getSession: (id: string) => this.sessions.get(id),
+      setSession: (id: string, s: any) => this.sessions.set(id, s),
+      deleteSession: (id: string) => this.sessions.delete(id),
+      getOutputBuffer: (id: string) => this.outputBuffers.get(id) || [],
+      setOutputBuffer: (id: string, buf: ConsoleOutput[]) =>
+        this.outputBuffers.set(id, buf),
+      getMaxBufferSize: () => this.maxBufferSize,
+      createStreamManager: (id: string, opts: any) => new StreamManager(id, opts),
+      setStreamManager: (id: string, sm: StreamManager) =>
+        this.streamManagers.set(id, sm),
+      getStreamManager: (id: string) => this.streamManagers.get(id),
+      deleteStreamManager: (id: string) => this.streamManagers.delete(id),
+      updateSessionStatus: async (id: string, status: string, meta?: Record<string, unknown>) => {
+        await this.sessionManager.updateSessionStatus(
+          id,
+          status as 'running' | 'stopped' | 'terminated' | 'failed' | 'paused' | 'initializing' | 'recovering',
+          meta
+        );
+      },
+      registerSessionWithHealthMonitoring: (id, session, opts) =>
+        this.registerSessionWithHealthMonitoring(id, session, opts),
+      emitEvent: (event: any) => this.emitEvent(event),
+      emitTypedEvent: (name: string, data: any) => this.emit(name, data),
+      getProtocolFactory: () => this.protocolFactory,
+      getOrCreateProtocol: async (type: string) =>
+        this.getOrCreateProtocol(type as any),
+      getErrorDetector: () => this.errorDetector,
+      addErrorPatterns: (patterns: any[]) =>
+        this.errorDetector?.addPatterns?.(patterns),
+      getPromptDetector: () => this.promptDetector,
+      getPaginationManager: () => this.paginationManager,
+      isSelfHealingEnabled: () => this.selfHealingEnabled,
+      getNextSequenceNumber: (_id: string) => {
+        // Sequence numbering is not currently tracked per-session in ConsoleManager;
+        // return 0 as a placeholder (protocol managers that need sequencing
+        // should maintain their own counters).
+        return 0;
+      },
+      getLogger: () => this.logger,
     };
   }
 
@@ -2924,296 +2982,14 @@ export class ConsoleManager
   }
 
   /**
-   * Create serial session using SerialProtocol
+   * Create serial session — delegates to SerialSessionManager
    */
   private async createSerialSession(
     sessionId: string,
     session: ConsoleSession,
     options: SessionOptions
   ): Promise<string> {
-    if (
-      !options.serialOptions &&
-      !['serial', 'com', 'uart'].includes(options.consoleType || '')
-    ) {
-      throw new Error(
-        'Serial options or serial console type required for serial session'
-      );
-    }
-
-    try {
-      // Initialize serial protocol if not already done
-      if (!this.serialProtocol) {
-        this.serialProtocol =
-          await this.protocolFactory.createProtocol('serial');
-        this.setupSerialProtocolEventHandlers();
-      }
-
-      // Determine serial options
-      let serialOptions: SerialConnectionOptions;
-
-      if (options.serialOptions) {
-        serialOptions = options.serialOptions;
-      } else {
-        // Auto-detect serial port if only console type is specified
-        const devices = await this.serialProtocol.discoverDevices();
-        const availableDevice = devices.find(
-          (device: { isConnected: boolean }) => device.isConnected === false
-        );
-
-        if (!availableDevice) {
-          throw new Error(
-            'No available serial devices found. Please specify explicit serial options.'
-          );
-        }
-
-        // Use first available device with default settings
-        serialOptions = {
-          path: availableDevice.path,
-          baudRate: availableDevice.deviceType === 'esp32' ? 115200 : 9600,
-          dataBits: 8,
-          stopBits: 1,
-          parity: 'none',
-          encoding: 'utf8',
-          lineEnding: '\r\n',
-          resetOnConnect: availableDevice.deviceType === 'arduino',
-          reconnectOnDisconnect: true,
-          maxReconnectAttempts: 5,
-          reconnectDelay: 1000,
-        };
-      }
-
-      // Store serial options in session
-      session.serialOptions = serialOptions;
-
-      // Create serial connection
-      await this.serialProtocol.createConnection(sessionId, serialOptions);
-
-      // Set up session tracking
-      this.sessions.set(sessionId, session);
-      this.outputBuffers.set(sessionId, []);
-
-      // Initialize stream manager for serial output
-      const streamManager = new StreamManager(sessionId, {
-        maxChunkSize: options.maxBuffer || 10000,
-        enableRealTimeCapture: true,
-        bufferFlushInterval: 10,
-        enablePolling: true,
-        pollingInterval: 50,
-        immediateFlush: true,
-        chunkCombinationTimeout: 20,
-      });
-      this.streamManagers.set(sessionId, streamManager);
-
-      // Initialize error detection for serial output
-      if (options.detectErrors !== false) {
-        const defaultPatterns = this.getDefaultSerialErrorPatterns();
-        const extendedPatterns = options.patterns
-          ? options.patterns.map((p) => ({ ...p, category: 'serial' }))
-          : defaultPatterns;
-        this.errorDetector.addPatterns(extendedPatterns);
-      }
-
-      this.logger.info(
-        `Serial session created successfully: ${sessionId} on ${serialOptions.path}`
-      );
-
-      // Emit session started event
-      this.emit('session:created', {
-        sessionId,
-        type: 'serial',
-        path: serialOptions.path,
-        deviceType: serialOptions.deviceType || 'generic',
-        timestamp: new Date(),
-      });
-
-      return sessionId;
-    } catch (error) {
-      this.logger.error(
-        `Serial session creation failed for ${sessionId}:`,
-        error
-      );
-
-      // Clean up on failure
-      await this.cleanupSerialSession(sessionId);
-
-      throw error;
-    }
-  }
-
-  /**
-   * Set up event handlers for SerialProtocol
-   */
-  private setupSerialProtocolEventHandlers(): void {
-    this.serialProtocol.on('data', (output: ConsoleOutput) => {
-      this.handleSerialOutput(output);
-    });
-
-    this.serialProtocol.on('line', (output: ConsoleOutput) => {
-      this.handleSerialLine(output);
-    });
-
-    this.serialProtocol.on('binary_data', (output: ConsoleOutput) => {
-      this.handleSerialBinaryData(output);
-    });
-
-    this.serialProtocol.on('connection', (event: unknown) => {
-      this.logger.info(`Serial connection event:`, event);
-      this.emit('serial:connection', event);
-    });
-
-    this.serialProtocol.on('disconnection', (event: unknown) => {
-      this.logger.warn(`Serial disconnection event:`, event);
-      this.emit('serial:disconnection', event);
-    });
-
-    this.serialProtocol.on('error', (event: unknown) => {
-      this.logger.error(`Serial error event:`, event);
-      this.emit('serial:error', event);
-    });
-
-    this.serialProtocol.on('bootloader_detected', (event: unknown) => {
-      this.logger.info(`Bootloader detected:`, event);
-      this.emit('serial:bootloader_detected', event);
-    });
-
-    this.serialProtocol.on('device_list_updated', (devices: unknown) => {
-      this.emit('serial:device_list_updated', devices);
-    });
-  }
-
-  /**
-   * Handle serial data output
-   */
-  private handleSerialOutput(output: ConsoleOutput): void {
-    const { sessionId } = output;
-
-    // Store output in buffer
-    const buffer = this.outputBuffers.get(sessionId);
-    if (buffer) {
-      buffer.push(output);
-    }
-
-    // Pass through stream manager
-    const streamManager = this.streamManagers.get(sessionId);
-    if (streamManager) {
-      streamManager.processOutput(output);
-    }
-
-    // Emit output event
-    this.emit('output', output);
-    this.emit(`output:${sessionId}`, output);
-  }
-
-  /**
-   * Handle serial line output (parsed lines)
-   */
-  private handleSerialLine(output: ConsoleOutput): void {
-    const { sessionId } = output;
-
-    // Process line for error detection
-    if (this.errorDetector) {
-      this.errorDetector.processOutput(output.data);
-    }
-
-    // Process line for prompt detection
-    if (this.promptDetector) {
-      const result = this.promptDetector.detectPrompt(sessionId, output.data);
-      if (result && result.detected) {
-        this.emit('prompt:detected', {
-          sessionId,
-          pattern: result.pattern,
-          matchedText: result.matchedText,
-          timestamp: new Date(),
-        });
-      }
-    }
-
-    // Regular output handling
-    this.handleSerialOutput(output);
-  }
-
-  /**
-   * Handle binary data from serial connection
-   */
-  private handleSerialBinaryData(output: ConsoleOutput): void {
-    // Binary data typically bypasses text processing
-    this.handleSerialOutput(output);
-  }
-
-  /**
-   * Get default error patterns for serial communication
-   */
-  private getDefaultSerialErrorPatterns(): ExtendedErrorPattern[] {
-    return [
-      {
-        pattern: /error|ERROR|Error/,
-        type: 'error',
-        description: 'General error message',
-        severity: 'medium',
-        category: 'serial',
-        tags: ['serial', 'general'],
-      },
-      {
-        pattern: /exception|Exception|EXCEPTION/,
-        type: 'exception',
-        description: 'Exception in serial communication',
-        severity: 'high',
-        category: 'serial',
-        tags: ['serial', 'exception'],
-      },
-      {
-        pattern: /timeout|Timeout|TIMEOUT/,
-        type: 'error',
-        description: 'Serial communication timeout',
-        severity: 'medium',
-        category: 'serial',
-        tags: ['serial', 'timeout'],
-      },
-      {
-        pattern: /connection.*lost|disconnected|unplugged/i,
-        type: 'error',
-        description: 'Serial device disconnected',
-        severity: 'high',
-        category: 'serial',
-        tags: ['serial', 'connection'],
-      },
-      {
-        pattern: /bootloader|Bootloader|BOOTLOADER/,
-        type: 'warning',
-        description: 'Device in bootloader mode',
-        severity: 'low',
-        category: 'serial',
-        tags: ['serial', 'bootloader'],
-      },
-    ];
-  }
-
-  /**
-   * Clean up serial session resources
-   */
-  private async cleanupSerialSession(sessionId: string): Promise<void> {
-    try {
-      // Remove from sessions map
-      this.sessions.delete(sessionId);
-
-      // Close serial connection
-      if (this.serialProtocol) {
-        await this.serialProtocol.closeConnection(sessionId);
-      }
-
-      // Clean up buffers and managers
-      this.outputBuffers.delete(sessionId);
-      this.streamManagers.delete(sessionId);
-      // Cleanup pagination manager for this session
-      this.paginationManager.removeSession(sessionId);
-
-      // Error patterns are global and don't need session-specific cleanup
-    } catch (error) {
-      this.logger.error(
-        `Error cleaning up serial session ${sessionId}:`,
-        error
-      );
-    }
+    return this.serialSessionManager.createSession(sessionId, session, options);
   }
 
   /**
@@ -5462,38 +5238,13 @@ export class ConsoleManager
   }
 
   /**
-   * Send input to serial session
+   * Send input to serial session — delegates to SerialSessionManager
    */
   private async sendInputToSerial(
     sessionId: string,
     input: string
   ): Promise<void> {
-    if (!this.serialProtocol) {
-      throw new Error('Serial protocol not initialized');
-    }
-
-    try {
-      // Send data to serial device
-      await this.serialProtocol.sendData(sessionId, input);
-
-      // Emit input event
-      this.emitEvent({
-        sessionId,
-        type: 'input',
-        timestamp: new Date(),
-        data: { input },
-      });
-
-      this.logger.debug(
-        `Sent input to serial session ${sessionId}: ${input.substring(0, 100)}${input.length > 100 ? '...' : ''}`
-      );
-    } catch (error) {
-      this.logger.error(
-        `Failed to send input to serial session ${sessionId}:`,
-        error
-      );
-      throw error;
-    }
+    return this.serialSessionManager.sendInput(sessionId, input);
   }
 
   /**
@@ -6858,75 +6609,38 @@ export class ConsoleManager
   }
 
   /**
-   * Discover available serial devices
+   * Discover available serial devices — delegates to SerialSessionManager
    */
   async discoverSerialDevices(): Promise<unknown[]> {
-    try {
-      // Initialize serial protocol if not already done
-      if (!this.serialProtocol) {
-        this.serialProtocol =
-          await this.protocolFactory.createProtocol('serial');
-        this.setupSerialProtocolEventHandlers();
-      }
-
-      return await this.serialProtocol.discoverDevices();
-    } catch (error) {
-      this.logger.error('Failed to discover serial devices:', error);
-      throw error;
-    }
+    return this.serialSessionManager.discoverSerialDevices();
   }
 
   /**
-   * Get serial connection status for a session
+   * Get serial connection status — delegates to SerialSessionManager
    */
   getSerialConnectionStatus(sessionId: string): unknown {
-    if (!this.serialProtocol) {
-      return null;
-    }
-
-    return this.serialProtocol.getConnectionStatus(sessionId);
+    return this.serialSessionManager.getSerialConnectionStatus(sessionId);
   }
 
   /**
-   * Perform device reset on a serial session (e.g., Arduino reset)
+   * Reset serial device — delegates to SerialSessionManager
    */
   async resetSerialDevice(sessionId: string): Promise<void> {
-    if (!this.serialProtocol) {
-      throw new Error('Serial protocol not initialized');
-    }
-
-    try {
-      await this.serialProtocol.performDeviceReset(sessionId);
-      this.logger.info(
-        `Device reset performed for serial session ${sessionId}`
-      );
-    } catch (error) {
-      this.logger.error(
-        `Failed to reset device for session ${sessionId}:`,
-        error
-      );
-      throw error;
-    }
+    return this.serialSessionManager.resetSerialDevice(sessionId);
   }
 
   /**
-   * Get output buffer for serial session
+   * Get serial output buffer — delegates to SerialSessionManager
    */
   getSerialOutputBuffer(sessionId: string, limit?: number): unknown[] {
-    if (!this.serialProtocol) {
-      return [];
-    }
-
-    return this.serialProtocol.getOutputBuffer(sessionId, limit);
+    return this.serialSessionManager.getSerialOutputBuffer(sessionId, limit);
   }
 
   /**
-   * Clear output buffer for serial session
+   * Clear serial output buffer — delegates to SerialSessionManager
    */
   clearSerialOutputBuffer(sessionId: string): void {
-    if (this.serialProtocol) {
-      this.serialProtocol.clearOutputBuffer(sessionId);
-    }
+    this.serialSessionManager.clearSerialOutputBuffer(sessionId);
   }
 
   async destroy() {
@@ -6974,11 +6688,8 @@ export class ConsoleManager
     this.errorRecovery.destroy();
     this.timeoutRecoveryManager.dispose();
 
-    // Clean up serial protocol
-    if (this.serialProtocol) {
-      await this.serialProtocol.cleanup();
-      this.logger.info('Serial protocol cleaned up');
-    }
+    // Clean up serial session manager
+    await this.serialSessionManager.destroy();
 
     // Clean up all cached protocols
     for (const [type, protocol] of this.protocolCache) {
