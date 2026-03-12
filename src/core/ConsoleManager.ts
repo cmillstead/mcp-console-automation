@@ -19,8 +19,8 @@ import {
   SerialConnectionOptions,
   WSLConnectionOptions,
   WSLSession,
-  SFTPSessionOptions,
-  FileTransferSession,
+  // SFTPSessionOptions — removed, now used only in SFTPSessionManager
+  // FileTransferSession — removed, now used only in SFTPSessionManager
   SFTPTransferOptions,
   // AWSSSMConnectionOptions — removed, now used only in AWSSSMSessionManager
   RDPConnectionOptions,
@@ -110,6 +110,7 @@ import {
 import { KubernetesSessionManager } from './KubernetesSessionManager.js';
 import { RDPSessionManager } from './RDPSessionManager.js';
 import { IPCSessionManager } from './IPCSessionManager.js';
+import { SFTPSessionManager } from './SFTPSessionManager.js';
 // JobManager functionality integrated into SessionManager
 import PQueue from 'p-queue';
 import { platform } from 'os';
@@ -124,8 +125,8 @@ export class ConsoleManager
   private sshClients: Map<string, SSHClient>;
   private sshChannels: Map<string, ClientChannel>;
   private sshConnectionPool: Map<string, SSHClient>; // Legacy connection pooling for SSH
-  private sftpProtocols: Map<string, any>; // SFTP protocol instances
-  private fileTransferSessions: Map<string, FileTransferSession>; // File transfer session tracking
+  // sftpProtocols — removed, now managed by SFTPSessionManager
+  // fileTransferSessions — removed, now managed by SFTPSessionManager
   private outputBuffers: Map<string, ConsoleOutput[]>;
   private paginationManager: OutputPaginationManager;
   private streamManagers: Map<string, StreamManager>;
@@ -171,6 +172,8 @@ export class ConsoleManager
   private rdpSessionManager!: RDPSessionManager;
   // IPC session management — owned by IPCSessionManager
   private ipcSessionManager!: IPCSessionManager;
+  // SFTP session management — owned by SFTPSessionManager
+  private sftpSessionManager!: SFTPSessionManager;
 
   // Convenience getters for sub-components (backwards compat within ConsoleManager)
   private get healthMonitor(): HealthMonitor {
@@ -259,8 +262,7 @@ export class ConsoleManager
     this.sshClients = new Map();
     this.sshChannels = new Map();
     this.sshConnectionPool = new Map();
-    this.sftpProtocols = new Map();
-    this.fileTransferSessions = new Map();
+    // sftpProtocols and fileTransferSessions moved to SFTPSessionManager
     this.outputBuffers = new Map();
     this.streamManagers = new Map();
     this.sessionHealthCheckIntervals = new Map();
@@ -395,6 +397,12 @@ export class ConsoleManager
 
     // Initialize IPC session manager
     this.ipcSessionManager = new IPCSessionManager(
+      this.buildProtocolSessionHost(),
+      this.logger
+    );
+
+    // Initialize SFTP session manager
+    this.sftpSessionManager = new SFTPSessionManager(
       this.buildProtocolSessionHost(),
       this.logger
     );
@@ -2583,95 +2591,14 @@ export class ConsoleManager
   }
 
   /**
-   * Create SFTP/SCP file transfer session
+   * Create SFTP/SCP file transfer session — delegates to SFTPSessionManager
    */
   private async createSFTPSession(
     sessionId: string,
     session: ConsoleSession,
     options: SessionOptions
   ): Promise<string> {
-    if (!options.sshOptions) {
-      throw new Error('SSH options are required for SFTP/SCP session');
-    }
-
-    try {
-      this.logger.info(
-        `Creating SFTP session: ${sessionId} for ${options.sshOptions.host}`
-      );
-
-      // Create SFTP session options
-      const sftpOptions: SFTPSessionOptions = {
-        ...options.sshOptions,
-        maxConcurrentTransfers: 3,
-        transferQueue: {
-          maxSize: 100,
-          priorityLevels: 4,
-          timeoutMs: 300000,
-        },
-        bandwidth: {
-          adaptiveThrottling: true,
-        },
-        compressionLevel: 6,
-        keepAlive: {
-          enabled: true,
-          interval: 30000,
-          maxMissed: 3,
-        },
-      };
-
-      // Initialize SFTP protocol
-      const sftpProtocol = (await this.protocolFactory.createProtocol(
-        'sftp'
-      )) as any;
-
-      // Setup event handlers
-      this.setupSFTPEventHandlers(sessionId, sftpProtocol);
-
-      // Connect SFTP
-      await sftpProtocol.connect();
-
-      // Store SFTP protocol instance
-      this.sftpProtocols.set(sessionId, sftpProtocol);
-
-      // Create file transfer session tracking
-      const fileTransferSession: FileTransferSession = {
-        ...session,
-        protocol: options.consoleType as 'sftp' | 'scp',
-        sftpOptions,
-        activeTransfers: new Map(),
-        transferQueue: [],
-        connectionState: sftpProtocol.getConnectionState(),
-        transferStats: {
-          totalTransfers: 0,
-          successfulTransfers: 0,
-          failedTransfers: 0,
-          totalBytesTransferred: 0,
-          averageSpeed: 0,
-        },
-      };
-
-      this.fileTransferSessions.set(sessionId, fileTransferSession);
-
-      // Update session status
-      session.status = 'running';
-      this.sessions.set(sessionId, session);
-
-      this.emit('session-started', {
-        sessionId,
-        type: 'sftp',
-        options: sftpOptions,
-      });
-      this.logger.info(`SFTP session created successfully: ${sessionId}`);
-
-      return sessionId;
-    } catch (error) {
-      this.logger.error(`Failed to create SFTP session ${sessionId}:`, error);
-
-      // Cleanup on failure
-      this.cleanupSFTPSession(sessionId);
-
-      throw error;
-    }
+    return this.sftpSessionManager.createSession(sessionId, session, options);
   }
 
   /**
@@ -5769,6 +5696,9 @@ export class ConsoleManager
     // Clean up IPC session manager
     await this.ipcSessionManager.destroy();
 
+    // Clean up SFTP session manager
+    await this.sftpSessionManager.destroy();
+
     // Clean up all cached protocols
     for (const [type, protocol] of this.protocolCache) {
       try {
@@ -5799,7 +5729,7 @@ export class ConsoleManager
     }
 
     // Clear session maps
-    this.sftpProtocols?.clear();
+    // sftpProtocols — removed, now managed by SFTPSessionManager
     this.winrmProtocols?.clear();
     this.vncProtocols?.clear();
     // ipcProtocols — removed, now managed by IPCSessionManager
@@ -7089,69 +7019,20 @@ export class ConsoleManager
     return this.rdpSessionManager.disconnectSession(sessionId);
   }
 
-  // SFTP/SCP Protocol Methods
+  // SFTP/SCP Protocol Methods — delegated to SFTPSessionManager
+  // setupSFTPEventHandlers — removed, now internal to SFTPSessionManager
+  // updateTransferSessionStats — removed, now internal to SFTPSessionManager
+  // cleanupSFTPSession — removed, now internal to SFTPSessionManager
 
   /**
-   * Setup SFTP event handlers
-   */
-  private setupSFTPEventHandlers(sessionId: string, sftpProtocol: IProtocol): void {
-    sftpProtocol.on('connected', (connectionState: string) => {
-      this.logger.info(`SFTP session ${sessionId} connected`);
-      this.emit('sftp-connected', { sessionId, connectionState });
-    });
-
-    sftpProtocol.on('transfer-progress', (progress: { status: string; transferredBytes?: number }) => {
-      this.updateTransferSessionStats(sessionId, progress);
-      this.emit('sftp-transfer-progress', { sessionId, progress });
-    });
-
-    sftpProtocol.on('error', (error: Error) => {
-      this.logger.error(`SFTP session ${sessionId} error:`, error);
-      this.emit('sftp-error', { sessionId, error });
-    });
-  }
-
-  /**
-   * Update transfer session statistics
-   */
-  private updateTransferSessionStats(sessionId: string, progress: { status: string; transferredBytes?: number }): void {
-    const transferSession = this.fileTransferSessions.get(sessionId);
-    if (!transferSession) return;
-
-    if (progress.status === 'completed') {
-      transferSession.transferStats.successfulTransfers++;
-      transferSession.transferStats.totalBytesTransferred +=
-        progress.transferredBytes || 0;
-    } else if (progress.status === 'failed') {
-      transferSession.transferStats.failedTransfers++;
-    }
-  }
-
-  /**
-   * Cleanup SFTP session resources
-   */
-  private async cleanupSFTPSession(sessionId: string): Promise<void> {
-    try {
-      const sftpProtocol = this.sftpProtocols.get(sessionId);
-      if (sftpProtocol) {
-        await sftpProtocol.disconnect();
-        this.sftpProtocols.delete(sessionId);
-      }
-      this.fileTransferSessions.delete(sessionId);
-    } catch (error) {
-      this.logger.error(`Error cleaning up SFTP session ${sessionId}:`, error);
-    }
-  }
-
-  /**
-   * Get SFTP protocol for session
+   * Get SFTP protocol for session — delegates to SFTPSessionManager
    */
   getSFTPProtocol(sessionId: string): any | undefined {
-    return this.sftpProtocols.get(sessionId);
+    return this.sftpSessionManager.getSFTPProtocol(sessionId);
   }
 
   /**
-   * Upload file via SFTP
+   * Upload file via SFTP — delegates to SFTPSessionManager
    */
   async uploadFile(
     sessionId: string,
@@ -7159,15 +7040,11 @@ export class ConsoleManager
     remotePath: string,
     options?: SFTPTransferOptions
   ): Promise<unknown> {
-    const sftpProtocol = this.getSFTPProtocol(sessionId);
-    if (!sftpProtocol) {
-      throw new Error(`SFTP session not found: ${sessionId}`);
-    }
-    return await sftpProtocol.uploadFile(localPath, remotePath, options);
+    return this.sftpSessionManager.uploadFile(sessionId, localPath, remotePath, options);
   }
 
   /**
-   * Download file via SFTP
+   * Download file via SFTP — delegates to SFTPSessionManager
    */
   async downloadFile(
     sessionId: string,
@@ -7175,11 +7052,7 @@ export class ConsoleManager
     localPath: string,
     options?: SFTPTransferOptions
   ): Promise<unknown> {
-    const sftpProtocol = this.getSFTPProtocol(sessionId);
-    if (!sftpProtocol) {
-      throw new Error(`SFTP session not found: ${sessionId}`);
-    }
-    return await sftpProtocol.downloadFile(remotePath, localPath, options);
+    return this.sftpSessionManager.downloadFile(sessionId, remotePath, localPath, options);
   }
 
   // WSL Integration Methods
