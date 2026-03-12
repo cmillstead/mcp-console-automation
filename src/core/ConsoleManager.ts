@@ -31,7 +31,7 @@ import {
   VNCSession,
   VNCFramebuffer,
   VNCSecurityType,
-  IPCSessionState,
+  // IPCSessionState — removed, now used by IPCSessionManager
   IPMISessionState,
   AnsibleConnectionOptions,
   IPCConnectionOptions,
@@ -109,6 +109,7 @@ import {
 } from './AWSSSMSessionManager.js';
 import { KubernetesSessionManager } from './KubernetesSessionManager.js';
 import { RDPSessionManager } from './RDPSessionManager.js';
+import { IPCSessionManager } from './IPCSessionManager.js';
 // JobManager functionality integrated into SessionManager
 import PQueue from 'p-queue';
 import { platform } from 'os';
@@ -168,6 +169,8 @@ export class ConsoleManager
   private kubernetesSessionManager!: KubernetesSessionManager;
   // RDP session management — owned by RDPSessionManager
   private rdpSessionManager!: RDPSessionManager;
+  // IPC session management — owned by IPCSessionManager
+  private ipcSessionManager!: IPCSessionManager;
 
   // Convenience getters for sub-components (backwards compat within ConsoleManager)
   private get healthMonitor(): HealthMonitor {
@@ -203,7 +206,7 @@ export class ConsoleManager
   // Legacy protocol instances (to be fully migrated)
   private winrmProtocols: Map<string, any>;
   private vncProtocols: Map<string, any>;
-  private ipcProtocols: Map<string, any>;
+  // ipcProtocols — removed, now managed by IPCSessionManager
   private ipmiProtocols: Map<string, any>;
   // kubernetesProtocol — removed, now managed by KubernetesSessionManager
   // awsSSMProtocol — removed, now managed by AWSSSMSessionManager
@@ -215,10 +218,10 @@ export class ConsoleManager
 
   // Legacy session tracking (to be migrated)
   // rdpSessions — removed, now managed by RDPSessionManager
+  // ipcSessions — removed, now managed by IPCSessionManager
   private winrmSessions: Map<string, WinRMSessionState>;
   private vncSessions: Map<string, VNCSession>;
   private vncFramebuffers: Map<string, VNCFramebuffer>;
-  private ipcSessions: Map<string, IPCSessionState>;
   private ipmiSessions: Map<
     string,
     import('../types/index.js').IPMISessionState
@@ -267,8 +270,7 @@ export class ConsoleManager
     this.winrmSessions = new Map();
     this.vncProtocols = new Map();
     this.vncSessions = new Map();
-    this.ipcProtocols = new Map();
-    this.ipcSessions = new Map();
+    // ipcProtocols and ipcSessions — removed, now managed by IPCSessionManager
     this.vncFramebuffers = new Map();
     this.ipmiProtocols = new Map();
     this.ipmiSessions = new Map();
@@ -387,6 +389,12 @@ export class ConsoleManager
 
     // Initialize RDP session manager
     this.rdpSessionManager = new RDPSessionManager(
+      this.buildProtocolSessionHost(),
+      this.logger
+    );
+
+    // Initialize IPC session manager
+    this.ipcSessionManager = new IPCSessionManager(
       this.buildProtocolSessionHost(),
       this.logger
     );
@@ -5758,6 +5766,9 @@ export class ConsoleManager
     // Clean up RDP session manager
     await this.rdpSessionManager.destroy();
 
+    // Clean up IPC session manager
+    await this.ipcSessionManager.destroy();
+
     // Clean up all cached protocols
     for (const [type, protocol] of this.protocolCache) {
       try {
@@ -5791,12 +5802,12 @@ export class ConsoleManager
     this.sftpProtocols?.clear();
     this.winrmProtocols?.clear();
     this.vncProtocols?.clear();
-    this.ipcProtocols?.clear();
+    // ipcProtocols — removed, now managed by IPCSessionManager
     this.ipmiProtocols?.clear();
     // rdpSessions — removed, now managed by RDPSessionManager
+    // ipcSessions — removed, now managed by IPCSessionManager
     this.winrmSessions?.clear();
     this.vncSessions?.clear();
-    this.ipcSessions?.clear();
     this.ipmiSessions?.clear();
 
     // Shutdown self-healing components
@@ -8030,25 +8041,14 @@ export class ConsoleManager
   }
 
   /**
-   * Create IPC session
+   * Create IPC session — delegates to IPCSessionManager
    */
   private async createIPCSession(
     sessionId: string,
     session: ConsoleSession,
     options: SessionOptions
   ): Promise<string> {
-    if (!options.ipcOptions) {
-      throw new Error('IPC options are required for IPC session');
-    }
-
-    try {
-      // Implementation placeholder - IPC session creation
-      this.logger.info(`Creating IPC session ${sessionId}`);
-      return sessionId;
-    } catch (error) {
-      this.logger.error(`Failed to create IPC session ${sessionId}:`, error);
-      throw error;
-    }
+    return this.ipcSessionManager.createSession(sessionId, session, options);
   }
 
   /**
