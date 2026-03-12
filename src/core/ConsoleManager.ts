@@ -107,6 +107,7 @@ import {
   AWSSSMSessionManager,
   AWSSSMSessionHost,
 } from './AWSSSMSessionManager.js';
+import { KubernetesSessionManager } from './KubernetesSessionManager.js';
 // JobManager functionality integrated into SessionManager
 import PQueue from 'p-queue';
 import { platform } from 'os';
@@ -162,6 +163,8 @@ export class ConsoleManager
   private azureSessionManager!: AzureSessionManager;
   // AWS SSM session management — owned by AWSSSMSessionManager
   private awsSSMSessionManager!: AWSSSMSessionManager;
+  // Kubernetes session management — owned by KubernetesSessionManager
+  private kubernetesSessionManager!: KubernetesSessionManager;
 
   // Convenience getters for sub-components (backwards compat within ConsoleManager)
   private get healthMonitor(): HealthMonitor {
@@ -199,7 +202,7 @@ export class ConsoleManager
   private vncProtocols: Map<string, any>;
   private ipcProtocols: Map<string, any>;
   private ipmiProtocols: Map<string, any>;
-  private kubernetesProtocol?: any;
+  // kubernetesProtocol — removed, now managed by KubernetesSessionManager
   // awsSSMProtocol — removed, now managed by AWSSSMSessionManager
   // azureProtocol — removed, now managed by AzureSessionManager
   // webSocketTerminalProtocol — removed, now managed by WebSocketTerminalSessionManager
@@ -371,6 +374,12 @@ export class ConsoleManager
     // Initialize AWS SSM session manager
     this.awsSSMSessionManager = new AWSSSMSessionManager(
       this.buildAWSSSMSessionHost(),
+      this.logger
+    );
+
+    // Initialize Kubernetes session manager
+    this.kubernetesSessionManager = new KubernetesSessionManager(
+      this.buildProtocolSessionHost(),
       this.logger
     );
 
@@ -1874,28 +1883,10 @@ export class ConsoleManager
       // Get current metrics
       result.metrics = this.metricsCollector.getCurrentMetrics();
 
-      // Get Kubernetes health if protocol is active
-      if (this.kubernetesProtocol) {
-        try {
-          const kubernetesHealth =
-            await this.kubernetesProtocol.performHealthCheck();
-          result.connectionHealth.set('kubernetes', {
-            type: 'kubernetes',
-            status: kubernetesHealth.status,
-            overallScore: kubernetesHealth.overallScore,
-            checks: kubernetesHealth.checks,
-            context: this.kubernetesProtocol.getCurrentContext(),
-            activeSessions: this.kubernetesProtocol.getActiveSessions().length,
-            timestamp: new Date(),
-          });
-        } catch (error) {
-          result.connectionHealth.set('kubernetes', {
-            type: 'kubernetes',
-            status: 'critical',
-            error: error.message,
-            timestamp: new Date(),
-          });
-        }
+      // Get Kubernetes health if protocol is active — delegates to KubernetesSessionManager
+      const kubernetesHealthStatus = await this.kubernetesSessionManager.getHealthStatus();
+      if (kubernetesHealthStatus) {
+        result.connectionHealth.set('kubernetes', kubernetesHealthStatus);
       }
     }
 
@@ -2426,169 +2417,14 @@ export class ConsoleManager
   }
 
   /**
-   * Create Kubernetes session using KubernetesProtocol
+   * Create Kubernetes session — delegates to KubernetesSessionManager
    */
   private async createKubernetesSession(
     sessionId: string,
     session: ConsoleSession,
     options: SessionOptions
   ): Promise<string> {
-    if (!options.kubernetesOptions) {
-      throw new Error('Kubernetes options are required for Kubernetes session');
-    }
-
-    try {
-      // Initialize Kubernetes protocol if not already done
-      if (!this.kubernetesProtocol) {
-        this.kubernetesProtocol =
-          await this.protocolFactory.createProtocol('kubectl');
-        /* Legacy config - now handled by protocol factory
-        this.kubernetesProtocol = new KubernetesProtocol({
-          connectionOptions: options.kubernetesOptions,
-          logger: this.logger
-        });
-        await this.kubernetesProtocol.connect();
-        */
-      }
-
-      // Determine session operation type based on command or console type
-      let sessionType: 'exec' | 'logs' | 'port-forward' = 'exec';
-      if (
-        options.command.includes('logs') ||
-        options.consoleType === 'k8s-logs'
-      ) {
-        sessionType = 'logs';
-      } else if (
-        options.command.includes('port-forward') ||
-        options.consoleType === 'k8s-port-forward'
-      ) {
-        sessionType = 'port-forward';
-      }
-
-      // Create Kubernetes session state
-      const kubernetesState: import('../types/index.js').KubernetesSessionState =
-        {
-          sessionType: sessionType,
-          kubeConfig: options.kubernetesOptions,
-          connectionState: {
-            connected: false,
-            reconnectAttempts: 0,
-          },
-        };
-
-      // Parse Kubernetes-specific options from command and args
-      const kubernetesExecOptions = this.parseKubernetesOptions(options);
-
-      if (sessionType === 'exec') {
-        // Create exec session
-        await this.kubernetesProtocol.createExecSession(
-          sessionId,
-          kubernetesExecOptions
-        );
-
-        // Setup event handlers for exec session
-        this.setupKubernetesExecHandlers(sessionId);
-      } else if (sessionType === 'logs') {
-        // Create log streaming session
-        const logOptions = this.parseKubernetesLogOptions(options);
-        await this.kubernetesProtocol.streamLogs(sessionId, logOptions);
-
-        // Setup event handlers for log streaming
-        this.setupKubernetesLogHandlers(sessionId);
-      } else if (sessionType === 'port-forward') {
-        // Create port forwarding session
-        const portForwardOptions = this.parsePortForwardOptions(options);
-        await this.kubernetesProtocol.startPortForward(
-          sessionId,
-          portForwardOptions
-        );
-
-        // Setup event handlers for port forwarding
-        this.setupKubernetesPortForwardHandlers(sessionId);
-      }
-
-      // Update session with Kubernetes state
-      const updatedSession = {
-        ...session,
-        kubernetesState: kubernetesState,
-        status: 'running' as const,
-        pid: undefined as number | undefined, // Kubernetes sessions don't have local PIDs
-      };
-      this.sessions.set(sessionId, updatedSession);
-      this.outputBuffers.set(sessionId, []);
-
-      // Register Kubernetes session with health monitoring
-      if (this.selfHealingEnabled) {
-        this.registerSessionWithHealthMonitoring(
-          sessionId,
-          updatedSession,
-          options
-        ).catch((error) => {
-          this.logger.warn(
-            `Failed to register Kubernetes session with health monitoring: ${error.message}`
-          );
-        });
-        this.logger.debug(
-          `Kubernetes session ${sessionId} registered for monitoring`
-        );
-      }
-
-      // Setup stream manager for Kubernetes output
-      if (options.streaming) {
-        const streamManager = new StreamManager(sessionId, {
-          enableRealTimeCapture: true,
-          immediateFlush: true,
-          bufferFlushInterval: 5,
-          pollingInterval: 25,
-          chunkCombinationTimeout: 10,
-          maxChunkSize: 4096,
-        });
-        this.streamManagers.set(sessionId, streamManager);
-      } else {
-        const streamManager = new StreamManager(sessionId, {
-          enableRealTimeCapture: true,
-          immediateFlush: true,
-          bufferFlushInterval: 10,
-          pollingInterval: 50,
-          chunkCombinationTimeout: 15,
-          maxChunkSize: 8192,
-        });
-        this.streamManagers.set(sessionId, streamManager);
-      }
-
-      // Update session manager
-      await this.sessionManager.updateSessionStatus(sessionId, 'running', {
-        kubernetesContext: this.kubernetesProtocol.getCurrentContext().context,
-        kubernetesNamespace:
-          this.kubernetesProtocol.getCurrentContext().namespace,
-        sessionType: sessionType,
-      });
-
-      this.emitEvent({
-        sessionId,
-        type: 'started',
-        timestamp: new Date(),
-        data: {
-          command: options.command,
-          type: 'kubernetes',
-          context: this.kubernetesProtocol.getCurrentContext().context,
-          namespace: this.kubernetesProtocol.getCurrentContext().namespace,
-          sessionType: sessionType,
-        },
-      });
-
-      this.logger.info(
-        `Kubernetes ${sessionType} session ${sessionId} created: ${options.command}`
-      );
-
-      return sessionId;
-    } catch (error) {
-      this.logger.error(
-        `Kubernetes session creation failed for ${sessionId}:`,
-        error
-      );
-      throw error;
-    }
+    return this.kubernetesSessionManager.createSession(sessionId, session, options);
   }
 
   /**
@@ -2704,342 +2540,9 @@ export class ConsoleManager
     }
   }
 
-  /**
-   * Parse Kubernetes exec options from session options
-   */
-  private parseKubernetesOptions(
-    options: SessionOptions
-  ): import('../types/index.js').KubernetesExecOptions {
-    const args = options.args || [];
-    const kubernetesOptions: import('../types/index.js').KubernetesExecOptions =
-      {
-        namespace: options.kubernetesOptions?.namespace,
-        interactive: true,
-        stdin: true,
-      };
-
-    // Parse common kubectl exec arguments
-    for (let i = 0; i < args.length; i++) {
-      const arg = args[i];
-      switch (arg) {
-        case '-n':
-        case '--namespace':
-          kubernetesOptions.namespace = args[i + 1];
-          i++;
-          break;
-        case '-c':
-        case '--container':
-          kubernetesOptions.containerName = args[i + 1];
-          i++;
-          break;
-        case '-l':
-        case '--selector':
-          kubernetesOptions.labelSelector = args[i + 1];
-          i++;
-          break;
-        default:
-          if (!kubernetesOptions.name && !arg.startsWith('-')) {
-            kubernetesOptions.name = arg;
-          }
-          break;
-      }
-    }
-
-    return kubernetesOptions;
-  }
-
-  /**
-   * Parse Kubernetes log options from session options
-   */
-  private parseKubernetesLogOptions(
-    options: SessionOptions
-  ): import('../types/index.js').KubernetesLogOptions {
-    const args = options.args || [];
-    const logOptions: import('../types/index.js').KubernetesLogOptions = {
-      namespace: options.kubernetesOptions?.namespace,
-      follow: true,
-    };
-
-    // Parse kubectl logs arguments
-    for (let i = 0; i < args.length; i++) {
-      const arg = args[i];
-      switch (arg) {
-        case '-n':
-        case '--namespace':
-          logOptions.namespace = args[i + 1];
-          i++;
-          break;
-        case '-c':
-        case '--container':
-          logOptions.containerName = args[i + 1];
-          i++;
-          break;
-        case '-l':
-        case '--selector':
-          logOptions.labelSelector = args[i + 1];
-          i++;
-          break;
-        case '-f':
-        case '--follow':
-          logOptions.follow = true;
-          break;
-        case '--tail':
-          logOptions.tail = parseInt(args[i + 1]);
-          i++;
-          break;
-        case '--since':
-          logOptions.since = args[i + 1];
-          i++;
-          break;
-        case '--timestamps':
-          logOptions.timestamps = true;
-          break;
-        case '--previous':
-          logOptions.previous = true;
-          break;
-        default:
-          if (!logOptions.podName && !arg.startsWith('-')) {
-            logOptions.podName = arg;
-          }
-          break;
-      }
-    }
-
-    return logOptions;
-  }
-
-  /**
-   * Parse port forward options from session options
-   */
-  private parsePortForwardOptions(
-    options: SessionOptions
-  ): import('../types/index.js').PortForwardOptions {
-    const args = options.args || [];
-    let podName = '';
-    let localPort = 0;
-    let remotePort = 0;
-    let namespace = options.kubernetesOptions?.namespace;
-
-    // Parse kubectl port-forward arguments
-    for (let i = 0; i < args.length; i++) {
-      const arg = args[i];
-      if (arg === '-n' || arg === '--namespace') {
-        namespace = args[i + 1];
-        i++;
-      } else if (!arg.startsWith('-')) {
-        if (!podName) {
-          podName = arg;
-        } else if (arg.includes(':')) {
-          const ports = arg.split(':');
-          localPort = parseInt(ports[0]);
-          remotePort = parseInt(ports[1]);
-        }
-      }
-    }
-
-    return {
-      podName,
-      localPort,
-      remotePort,
-      namespace,
-    };
-  }
-
-  /**
-   * Setup event handlers for Kubernetes exec sessions
-   */
-  private setupKubernetesExecHandlers(sessionId: string): void {
-    if (!this.kubernetesProtocol) return;
-
-    // Handle session events
-    this.kubernetesProtocol.on(
-      'sessionCreated',
-      ({ sessionId: k8sSessionId, sessionState }: { sessionId: string; sessionState: string }) => {
-        if (k8sSessionId === sessionId) {
-          this.logger.debug(`Kubernetes exec session ${sessionId} established`);
-        }
-      }
-    );
-
-    this.kubernetesProtocol.on(
-      'sessionClosed',
-      ({ sessionId: k8sSessionId }: { sessionId: string }) => {
-        if (k8sSessionId === sessionId) {
-          this.handleKubernetesSessionClosed(sessionId);
-        }
-      }
-    );
-  }
-
-  /**
-   * Setup event handlers for Kubernetes log streaming
-   */
-  private setupKubernetesLogHandlers(sessionId: string): void {
-    if (!this.kubernetesProtocol) return;
-
-    this.kubernetesProtocol.on(
-      'logData',
-      ({ streamId, podName, data, raw }: { streamId: string; podName: string; data: string; raw: string }) => {
-        if (streamId === sessionId) {
-          this.handleKubernetesLogData(sessionId, data, raw);
-        }
-      }
-    );
-
-    this.kubernetesProtocol.on('logError', ({ streamId, error }: { streamId: string; error: Error }) => {
-      if (streamId === sessionId) {
-        this.handleKubernetesLogError(sessionId, error);
-      }
-    });
-
-    this.kubernetesProtocol.on('logEnd', ({ streamId }: { streamId: string }) => {
-      if (streamId === sessionId) {
-        this.handleKubernetesLogEnd(sessionId);
-      }
-    });
-  }
-
-  /**
-   * Setup event handlers for Kubernetes port forwarding
-   */
-  private setupKubernetesPortForwardHandlers(sessionId: string): void {
-    if (!this.kubernetesProtocol) return;
-
-    this.kubernetesProtocol.on(
-      'portForwardStarted',
-      ({ portForwardId, localPort, remotePort }: { portForwardId: string; localPort: number; remotePort: number }) => {
-        if (portForwardId === sessionId) {
-          this.logger.info(
-            `Port forward ${sessionId} started: ${localPort} -> ${remotePort}`
-          );
-        }
-      }
-    );
-
-    this.kubernetesProtocol.on('portForwardStopped', ({ portForwardId }: { portForwardId: string }) => {
-      if (portForwardId === sessionId) {
-        this.handleKubernetesPortForwardStopped(sessionId);
-      }
-    });
-  }
-
-  /**
-   * Handle Kubernetes session closed
-   */
-  private handleKubernetesSessionClosed(sessionId: string): void {
-    const session = this.sessions.get(sessionId);
-    // Remove session from the map after stopping
-    if (session) {
-      this.sessions.delete(sessionId);
-    }
-
-    this.emitEvent({
-      sessionId,
-      type: 'stopped',
-      timestamp: new Date(),
-      data: { reason: 'kubernetes_session_closed' },
-    });
-
-    this.logger.info(`Kubernetes session ${sessionId} closed`);
-  }
-
-  /**
-   * Handle Kubernetes log data
-   */
-  private handleKubernetesLogData(
-    sessionId: string,
-    data: string,
-    raw: string
-  ): void {
-    const output: ConsoleOutput = {
-      sessionId,
-      type: 'stdout',
-      data: data,
-      timestamp: new Date(),
-      raw: raw,
-    };
-
-    const buffer = this.outputBuffers.get(sessionId) || [];
-    buffer.push(output);
-    this.outputBuffers.set(sessionId, buffer);
-
-    const streamManager = this.streamManagers.get(sessionId);
-    if (streamManager) {
-      streamManager.processOutput(output);
-    }
-
-    this.emitEvent({
-      sessionId,
-      type: 'output',
-      timestamp: new Date(),
-      data: output,
-    });
-  }
-
-  /**
-   * Handle Kubernetes log error
-   */
-  private handleKubernetesLogError(sessionId: string, error: Error): void {
-    const output: ConsoleOutput = {
-      sessionId,
-      type: 'stderr',
-      data: error.message,
-      timestamp: new Date(),
-    };
-
-    const buffer = this.outputBuffers.get(sessionId) || [];
-    buffer.push(output);
-    this.outputBuffers.set(sessionId, buffer);
-
-    this.emitEvent({
-      sessionId,
-      type: 'error',
-      timestamp: new Date(),
-      data: { error: error.message },
-    });
-
-    this.logger.error(`Kubernetes log error for session ${sessionId}:`, error);
-  }
-
-  /**
-   * Handle Kubernetes log stream end
-   */
-  private handleKubernetesLogEnd(sessionId: string): void {
-    const session = this.sessions.get(sessionId);
-    // Remove session from the map when log stream ends
-    if (session) {
-      this.sessions.delete(sessionId);
-    }
-
-    this.emitEvent({
-      sessionId,
-      type: 'stopped',
-      timestamp: new Date(),
-      data: { reason: 'log_stream_ended' },
-    });
-
-    this.logger.info(`Kubernetes log stream ${sessionId} ended`);
-  }
-
-  /**
-   * Handle Kubernetes port forward stopped
-   */
-  private handleKubernetesPortForwardStopped(sessionId: string): void {
-    const session = this.sessions.get(sessionId);
-    // Remove session from the map when port forward stops
-    if (session) {
-      this.sessions.delete(sessionId);
-    }
-
-    this.emitEvent({
-      sessionId,
-      type: 'stopped',
-      timestamp: new Date(),
-      data: { reason: 'port_forward_stopped' },
-    });
-
-    this.logger.info(`Kubernetes port forward ${sessionId} stopped`);
-  }
+  // parseKubernetesOptions, parseKubernetesLogOptions, parsePortForwardOptions — removed, now in KubernetesSessionManager
+  // setupKubernetesExecHandlers, setupKubernetesLogHandlers, setupKubernetesPortForwardHandlers — removed, now in KubernetesSessionManager
+  // handleKubernetesSessionClosed, handleKubernetesLogData, handleKubernetesLogError, handleKubernetesLogEnd, handleKubernetesPortForwardStopped — removed, now in KubernetesSessionManager
 
   /**
    * Create serial session — delegates to SerialSessionManager
@@ -4591,44 +4094,13 @@ export class ConsoleManager
   }
 
   /**
-   * Send input to Kubernetes session
+   * Send input to Kubernetes session — delegates to KubernetesSessionManager
    */
   private async sendInputToKubernetes(
     sessionId: string,
     input: string
   ): Promise<void> {
-    if (!this.kubernetesProtocol) {
-      throw new Error('Kubernetes protocol not initialized');
-    }
-
-    const session = this.sessions.get(sessionId);
-    if (!session || !session.kubernetesState) {
-      throw new Error(`Kubernetes session ${sessionId} not found`);
-    }
-
-    try {
-      // Only exec sessions support input
-      if (session.kubernetesState.sessionType === 'exec') {
-        await this.kubernetesProtocol.sendInput(sessionId, input);
-
-        this.emitEvent({
-          sessionId,
-          type: 'input',
-          timestamp: new Date(),
-          data: { input },
-        });
-      } else {
-        throw new Error(
-          `Input not supported for Kubernetes ${session.kubernetesState.sessionType} sessions`
-        );
-      }
-    } catch (error) {
-      this.logger.error(
-        `Failed to send input to Kubernetes session ${sessionId}:`,
-        error
-      );
-      throw error;
-    }
+    return this.kubernetesSessionManager.sendInput(sessionId, input);
   }
 
   async sendKey(sessionId: string, key: string): Promise<void> {
@@ -6272,6 +5744,9 @@ export class ConsoleManager
     // Clean up AWS SSM session manager
     await this.awsSSMSessionManager.destroy();
 
+    // Clean up Kubernetes session manager
+    await this.kubernetesSessionManager.destroy();
+
     // Clean up all cached protocols
     for (const [type, protocol] of this.protocolCache) {
       try {
@@ -6284,7 +5759,7 @@ export class ConsoleManager
 
     // Clean up legacy protocol instances
     const legacyProtocols: Array<{ name: string; instance: any }> = [
-      { name: 'kubernetes', instance: this.kubernetesProtocol },
+      // kubernetes — removed, now managed by KubernetesSessionManager
       // aws-ssm — removed, now managed by AWSSSMSessionManager
       // azure — removed, now managed by AzureSessionManager
       { name: 'rdp', instance: this.rdpProtocol },
