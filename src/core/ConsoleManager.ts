@@ -27,9 +27,9 @@ import {
   RDPSession,
   WinRMConnectionOptions,
   VNCConnectionOptions,
-  VNCSession,
-  VNCFramebuffer,
-  VNCSecurityType,
+  // VNCSession — removed, now used only by VNCSessionManager
+  // VNCFramebuffer — removed, now used only by VNCSessionManager
+  // VNCSecurityType — removed, now used only by VNCSessionManager
   // IPCSessionState — removed, now used by IPCSessionManager
   IPMISessionState,
   AnsibleConnectionOptions,
@@ -112,6 +112,7 @@ import { IPCSessionManager } from './IPCSessionManager.js';
 import { SFTPSessionManager } from './SFTPSessionManager.js';
 import { WinRMSessionManager } from './WinRMSessionManager.js';
 import { WSLSessionManager } from './WSLSessionManager.js';
+import { VNCSessionManager, VNCSessionHost } from './VNCSessionManager.js';
 // JobManager functionality integrated into SessionManager
 import PQueue from 'p-queue';
 import { platform } from 'os';
@@ -179,6 +180,8 @@ export class ConsoleManager
   private winrmSessionManager!: WinRMSessionManager;
   // WSL session management — owned by WSLSessionManager
   private wslSessionManager!: WSLSessionManager;
+  // VNC session management — owned by VNCSessionManager
+  private vncSessionManager!: VNCSessionManager;
 
   // Convenience getters for sub-components (backwards compat within ConsoleManager)
   private get healthMonitor(): HealthMonitor {
@@ -213,7 +216,7 @@ export class ConsoleManager
 
   // Legacy protocol instances (to be fully migrated)
   // winrmProtocols — removed, now managed by WinRMSessionManager
-  private vncProtocols: Map<string, any>;
+  // vncProtocols — removed, now managed by VNCSessionManager
   // ipcProtocols — removed, now managed by IPCSessionManager
   private ipmiProtocols: Map<string, any>;
   // kubernetesProtocol — removed, now managed by KubernetesSessionManager
@@ -228,8 +231,8 @@ export class ConsoleManager
   // rdpSessions — removed, now managed by RDPSessionManager
   // ipcSessions — removed, now managed by IPCSessionManager
   // winrmSessions — removed, now managed by WinRMSessionManager
-  private vncSessions: Map<string, VNCSession>;
-  private vncFramebuffers: Map<string, VNCFramebuffer>;
+  // vncSessions — removed, now managed by VNCSessionManager
+  // vncFramebuffers — removed, now managed by VNCSessionManager
   private ipmiSessions: Map<
     string,
     import('../types/index.js').IPMISessionState
@@ -274,10 +277,8 @@ export class ConsoleManager
 
     // Legacy session tracking (to be fully migrated)
     // winrmProtocols and winrmSessions — removed, now managed by WinRMSessionManager
-    this.vncProtocols = new Map();
-    this.vncSessions = new Map();
+    // vncProtocols, vncSessions, vncFramebuffers — removed, now managed by VNCSessionManager
     // ipcProtocols and ipcSessions — removed, now managed by IPCSessionManager
-    this.vncFramebuffers = new Map();
     this.ipmiProtocols = new Map();
     this.ipmiSessions = new Map();
     this.ipmiMonitoringIntervals = new Map();
@@ -420,6 +421,12 @@ export class ConsoleManager
     // Initialize WSL session manager
     this.wslSessionManager = new WSLSessionManager(
       this.buildProtocolSessionHost(),
+      this.logger
+    );
+
+    // Initialize VNC session manager
+    this.vncSessionManager = new VNCSessionManager(
+      this.buildVNCSessionHost(),
       this.logger
     );
 
@@ -1106,6 +1113,17 @@ export class ConsoleManager
       ...this.buildProtocolSessionHost(),
       updateSessionActivity: (id: string, metadata?: Record<string, unknown>) =>
         this.sessionManager.updateSessionActivity(id, metadata),
+    };
+  }
+
+  /**
+   * Build a VNCSessionHost — extends ProtocolSessionHost with handleSessionError.
+   */
+  private buildVNCSessionHost(): VNCSessionHost {
+    return {
+      ...this.buildProtocolSessionHost(),
+      handleSessionError: (sid: string, err: Error, op: string) =>
+        this.handleSessionError(sid, err, op),
     };
   }
 
@@ -5647,6 +5665,9 @@ export class ConsoleManager
     // Clean up WSL session manager
     await this.wslSessionManager.destroy();
 
+    // Clean up VNC session manager
+    await this.vncSessionManager.destroy();
+
     // Clean up all cached protocols
     for (const [type, protocol] of this.protocolCache) {
       try {
@@ -5679,12 +5700,11 @@ export class ConsoleManager
     // Clear session maps
     // sftpProtocols — removed, now managed by SFTPSessionManager
     // winrmProtocols and winrmSessions — removed, now managed by WinRMSessionManager
-    this.vncProtocols?.clear();
+    // vncProtocols, vncSessions, vncFramebuffers — removed, now managed by VNCSessionManager
     // ipcProtocols — removed, now managed by IPCSessionManager
     this.ipmiProtocols?.clear();
     // rdpSessions — removed, now managed by RDPSessionManager
     // ipcSessions — removed, now managed by IPCSessionManager
-    this.vncSessions?.clear();
     this.ipmiSessions?.clear();
 
     // Shutdown self-healing components
@@ -6544,254 +6564,14 @@ export class ConsoleManager
   }
 
   /**
-   * Create VNC session
+   * Create VNC session — delegates to VNCSessionManager
    */
   private async createVNCSession(
     sessionId: string,
     session: ConsoleSession,
     options: SessionOptions
   ): Promise<string> {
-    if (!options.vncOptions) {
-      throw new Error('VNC options are required for VNC session');
-    }
-
-    try {
-      this.logger.info(`Creating VNC session ${sessionId}`, {
-        host: options.vncOptions.host,
-        port: options.vncOptions.port,
-        rfbProtocolVersion: options.vncOptions.rfbProtocolVersion,
-        encoding: options.vncOptions.encoding,
-      });
-
-      // Create VNC protocol instance
-      const vncProtocol = await this.protocolFactory.createProtocol('vnc');
-      this.vncProtocols.set(sessionId, vncProtocol);
-
-      // Create VNC session via the protocol
-      const connectedSession = await vncProtocol.createSession(options);
-
-      // Create VNC session state
-      const vncSession: VNCSession = {
-        sessionId,
-        connectionId: (connectedSession as any).connectionId || sessionId,
-        status: 'connected',
-        host: options.vncOptions.host,
-        port: options.vncOptions.port || 5900,
-        protocolVersion: options.vncOptions.rfbProtocolVersion || 'auto',
-        serverName: (connectedSession as any).serverName || 'VNC Server',
-        securityType:
-          this.mapAuthMethodToVNCSecurityType(options.vncOptions.authMethod) ||
-          'vnc',
-        sharedConnection: options.vncOptions.sharedConnection || false,
-        viewOnlyMode: options.vncOptions.viewOnly || false,
-        supportedEncodings: (connectedSession as any).supportedEncodings || [
-          'raw',
-        ],
-        serverCapabilities: (connectedSession as any).serverCapabilities || {
-          cursorShapeUpdates: false,
-          richCursor: false,
-          desktopResize: false,
-          continuousUpdates: false,
-          fence: false,
-          fileTransfer: false,
-          clipboardTransfer: false,
-          audio: false,
-        },
-        connectionTime: new Date(),
-        lastActivity: new Date(),
-        framebufferInfo: {
-          width: 0,
-          height: 0,
-          pixelFormat: {
-            bitsPerPixel: 32,
-            depth: 24,
-            bigEndianFlag: false,
-            trueColorFlag: true,
-            redMax: 255,
-            greenMax: 255,
-            blueMax: 255,
-            redShift: 16,
-            greenShift: 8,
-            blueShift: 0,
-          },
-        },
-        statistics: {
-          bytesReceived: 0,
-          bytesSent: 0,
-          framebufferUpdates: 0,
-          keyboardEvents: 0,
-          mouseEvents: 0,
-          clipboardTransfers: 0,
-          fileTransfers: 0,
-          avgFrameRate: 0,
-          bandwidth: 0,
-          compression: 0,
-          latency: 0,
-        },
-        errorCount: 0,
-        warnings: [],
-        monitors: options.vncOptions.monitors || [
-          {
-            id: 0,
-            primary: true,
-            x: 0,
-            y: 0,
-            width: 1024,
-            height: 768,
-          },
-        ],
-      };
-
-      this.vncSessions.set(sessionId, vncSession);
-
-      // Initialize framebuffer
-      const framebuffer: VNCFramebuffer = {
-        width: vncSession.framebufferInfo.width,
-        height: vncSession.framebufferInfo.height,
-        pixelFormat: vncSession.framebufferInfo.pixelFormat,
-        data: Buffer.alloc(0),
-        lastUpdate: new Date(),
-        encoding: options.vncOptions.encoding || ['raw'],
-        compressionLevel: options.vncOptions.compressionLevel || 6,
-      };
-
-      this.vncFramebuffers.set(sessionId, framebuffer);
-
-      // Update console session
-      const updatedSession = { ...session };
-      updatedSession.status = 'running';
-      updatedSession.pid = undefined; // VNC sessions don't have PIDs
-      updatedSession.vncOptions = options.vncOptions;
-      this.sessions.set(sessionId, updatedSession);
-
-      // Initialize output buffer
-      this.outputBuffers.set(sessionId, []);
-
-      // Setup output streaming if requested
-      if (options.streaming) {
-        const streamManager = new StreamManager(sessionId);
-        this.streamManagers.set(sessionId, streamManager);
-      }
-
-      // Register with session manager
-      await this.sessionManager.updateSessionStatus(sessionId, 'running', {
-        vncHost: options.vncOptions.host,
-        vncPort: options.vncOptions.port,
-        rfbVersion: options.vncOptions.rfbProtocolVersion,
-        securityType: options.vncOptions.authMethod,
-        encoding: options.vncOptions.encoding,
-      });
-
-      // Setup VNC event handlers
-      this.setupVNCEventHandlers(sessionId, vncProtocol);
-
-      // Emit session started event
-      this.emitEvent({
-        sessionId,
-        type: 'started',
-        timestamp: new Date(),
-        data: {
-          host: options.vncOptions.host,
-          port: options.vncOptions.port,
-          encoding: options.vncOptions.encoding,
-          vnc: true,
-        },
-      });
-
-      this.logger.info(`VNC session ${sessionId} created successfully`);
-      return sessionId;
-    } catch (error) {
-      this.logger.error(`Failed to create VNC session ${sessionId}:`, error);
-
-      // Clean up failed session
-      this.vncProtocols.delete(sessionId);
-      this.vncSessions.delete(sessionId);
-      this.vncFramebuffers.delete(sessionId);
-
-      // Update session status to failed
-      const updatedSession = { ...session };
-      updatedSession.status = 'crashed';
-      this.sessions.set(sessionId, updatedSession);
-
-      throw error;
-    }
-  }
-
-  /**
-   * Setup VNC event handlers
-   */
-  private setupVNCEventHandlers(sessionId: string, vncProtocol: any): void {
-    // Handle framebuffer updates
-    vncProtocol.on('framebuffer-update', (update: { data: Buffer; width: number; height: number; encoding: string }) => {
-      const framebuffer = this.vncFramebuffers.get(sessionId);
-      if (framebuffer) {
-        framebuffer.data = update.data;
-        framebuffer.lastUpdate = new Date();
-        this.vncFramebuffers.set(sessionId, framebuffer);
-
-        // Emit framebuffer update event
-        this.emitEvent({
-          sessionId,
-          type: 'vnc-framebuffer-update',
-          timestamp: new Date(),
-          data: {
-            width: update.width,
-            height: update.height,
-            encoding: update.encoding,
-          },
-        });
-      }
-    });
-
-    // Handle VNC server messages
-    vncProtocol.on('server-message', (message: { text?: string }) => {
-      const output: ConsoleOutput = {
-        sessionId,
-        type: 'stdout',
-        data: message.text || JSON.stringify(message),
-        timestamp: new Date(),
-        raw: JSON.stringify(message),
-      };
-
-      const outputBuffer = this.outputBuffers.get(sessionId) || [];
-      outputBuffer.push(output);
-      this.outputBuffers.set(sessionId, outputBuffer);
-
-      this.emit('output', output);
-    });
-
-    // Handle clipboard updates
-    vncProtocol.on('clipboard-update', (clipboardData: string) => {
-      this.emitEvent({
-        sessionId,
-        type: 'vnc-clipboard-update',
-        timestamp: new Date(),
-        data: { content: clipboardData },
-      });
-    });
-
-    // Handle connection errors
-    vncProtocol.on('error', (error: Error) => {
-      this.logger.error(`VNC session ${sessionId} error:`, error);
-      this.handleSessionError(sessionId, error, 'vnc-connection');
-    });
-
-    // Handle disconnection
-    vncProtocol.on('disconnect', () => {
-      this.logger.info(`VNC session ${sessionId} disconnected`);
-      const session = this.sessions.get(sessionId);
-      if (session) {
-        session.status = 'terminated';
-        this.sessions.set(sessionId, session);
-      }
-
-      this.emitEvent({
-        sessionId,
-        type: 'terminated',
-        timestamp: new Date(),
-        data: { reason: 'vnc-disconnect' },
-      });
-    });
+    return this.vncSessionManager.createSession(sessionId, session, options);
   }
 
   /**
@@ -7602,34 +7382,6 @@ export class ConsoleManager
     options: SessionOptions
   ): Promise<string> {
     return this.ipcSessionManager.createSession(sessionId, session, options);
-  }
-
-  /**
-   * Map auth method to VNC security type
-   */
-  private mapAuthMethodToVNCSecurityType(authMethod?: string): VNCSecurityType {
-    switch (authMethod) {
-      case 'none':
-        return 'none';
-      case 'vnc':
-        return 'vnc';
-      case 'tight':
-        return 'tight';
-      case 'ultra':
-        return 'ultra';
-      case 'tls':
-        return 'tls';
-      case 'vencrypt':
-        return 'vencrypt';
-      case 'ra2':
-        return 'ra2';
-      case 'ra2ne':
-        return 'ra2ne';
-      case 'sasl':
-        return 'sasl';
-      default:
-        return 'vnc';
-    }
   }
 
   // ========================================================================================
