@@ -31,10 +31,10 @@ import {
   // VNCFramebuffer — removed, now used only by VNCSessionManager
   // VNCSecurityType — removed, now used only by VNCSessionManager
   // IPCSessionState — removed, now used by IPCSessionManager
-  IPMISessionState,
+  // IPMISessionState — removed, now used by IPMISessionManager
   AnsibleConnectionOptions,
   IPCConnectionOptions,
-  IPMIConnectionOptions,
+  // IPMIConnectionOptions — removed, now used by IPMISessionManager
 } from '../types/index.js';
 import { ErrorDetector } from './ErrorDetector.js';
 import { Logger } from '../utils/logger.js';
@@ -113,6 +113,7 @@ import { SFTPSessionManager } from './SFTPSessionManager.js';
 import { WinRMSessionManager } from './WinRMSessionManager.js';
 import { WSLSessionManager } from './WSLSessionManager.js';
 import { VNCSessionManager, VNCSessionHost } from './VNCSessionManager.js';
+import { IPMISessionManager } from './IPMISessionManager.js';
 // JobManager functionality integrated into SessionManager
 import PQueue from 'p-queue';
 import { platform } from 'os';
@@ -182,6 +183,8 @@ export class ConsoleManager
   private wslSessionManager!: WSLSessionManager;
   // VNC session management — owned by VNCSessionManager
   private vncSessionManager!: VNCSessionManager;
+  // IPMI session management — owned by IPMISessionManager
+  private ipmiSessionManager!: IPMISessionManager;
 
   // Convenience getters for sub-components (backwards compat within ConsoleManager)
   private get healthMonitor(): HealthMonitor {
@@ -218,7 +221,7 @@ export class ConsoleManager
   // winrmProtocols — removed, now managed by WinRMSessionManager
   // vncProtocols — removed, now managed by VNCSessionManager
   // ipcProtocols — removed, now managed by IPCSessionManager
-  private ipmiProtocols: Map<string, any>;
+  // ipmiProtocols — removed, now managed by IPMISessionManager
   // kubernetesProtocol — removed, now managed by KubernetesSessionManager
   // awsSSMProtocol — removed, now managed by AWSSSMSessionManager
   // azureProtocol — removed, now managed by AzureSessionManager
@@ -233,14 +236,8 @@ export class ConsoleManager
   // winrmSessions — removed, now managed by WinRMSessionManager
   // vncSessions — removed, now managed by VNCSessionManager
   // vncFramebuffers — removed, now managed by VNCSessionManager
-  private ipmiSessions: Map<
-    string,
-    import('../types/index.js').IPMISessionState
-  >;
-  private ipmiMonitoringIntervals: Map<
-    string,
-    NodeJS.Timeout | NodeJS.Timeout[]
-  >;
+  // ipmiSessions — removed, now managed by IPMISessionManager
+  // ipmiMonitoringIntervals — removed, now managed by IPMISessionManager
   // webSocketTerminalSessions — removed, now managed by WebSocketTerminalSessionManager
   private ansibleSessions: Map<
     string,
@@ -279,9 +276,7 @@ export class ConsoleManager
     // winrmProtocols and winrmSessions — removed, now managed by WinRMSessionManager
     // vncProtocols, vncSessions, vncFramebuffers — removed, now managed by VNCSessionManager
     // ipcProtocols and ipcSessions — removed, now managed by IPCSessionManager
-    this.ipmiProtocols = new Map();
-    this.ipmiSessions = new Map();
-    this.ipmiMonitoringIntervals = new Map();
+    // ipmiProtocols, ipmiSessions, ipmiMonitoringIntervals — removed, now managed by IPMISessionManager
     this.errorDetector = new ErrorDetector();
     this.outputFilterEngine = new OutputFilterEngine();
     this.paginationManager = new OutputPaginationManager({
@@ -427,6 +422,12 @@ export class ConsoleManager
     // Initialize VNC session manager
     this.vncSessionManager = new VNCSessionManager(
       this.buildVNCSessionHost(),
+      this.logger
+    );
+
+    // Initialize IPMI session manager
+    this.ipmiSessionManager = new IPMISessionManager(
+      this.buildProtocolSessionHost(),
       this.logger
     );
 
@@ -5605,18 +5606,6 @@ export class ConsoleManager
     }
     this.sessionHealthCheckIntervals.clear();
 
-    // Clean up IPMI monitoring intervals
-    for (const [, timers] of this.ipmiMonitoringIntervals) {
-      if (Array.isArray(timers)) {
-        for (const timer of timers) {
-          clearInterval(timer);
-        }
-      } else {
-        clearInterval(timers);
-      }
-    }
-    this.ipmiMonitoringIntervals.clear();
-
     await this.stopAllSessions();
 
     // Close all SSH connections in the pool
@@ -5668,6 +5657,9 @@ export class ConsoleManager
     // Clean up VNC session manager
     await this.vncSessionManager.destroy();
 
+    // Clean up IPMI session manager
+    await this.ipmiSessionManager.destroy();
+
     // Clean up all cached protocols
     for (const [type, protocol] of this.protocolCache) {
       try {
@@ -5702,10 +5694,9 @@ export class ConsoleManager
     // winrmProtocols and winrmSessions — removed, now managed by WinRMSessionManager
     // vncProtocols, vncSessions, vncFramebuffers — removed, now managed by VNCSessionManager
     // ipcProtocols — removed, now managed by IPCSessionManager
-    this.ipmiProtocols?.clear();
+    // ipmiProtocols, ipmiSessions — removed, now managed by IPMISessionManager
     // rdpSessions — removed, now managed by RDPSessionManager
     // ipcSessions — removed, now managed by IPCSessionManager
-    this.ipmiSessions?.clear();
 
     // Shutdown self-healing components
     if (this.selfHealingEnabled) {
@@ -6778,599 +6769,99 @@ export class ConsoleManager
   // createWebSocketTerminalSession() — removed, now in WebSocketTerminalSessionManager.createSession()
 
   /**
-   * Create IPMI session
+   * Create IPMI session — delegates to IPMISessionManager
    */
   private async createIPMISession(
     sessionId: string,
     session: ConsoleSession,
     options: SessionOptions
   ): Promise<string> {
-    if (!options.ipmiOptions) {
-      throw new Error('IPMI options are required for IPMI session');
-    }
-
-    try {
-      this.logger.info(`Creating IPMI session ${sessionId}`, {
-        host: options.ipmiOptions.host,
-        port: options.ipmiOptions.port,
-        username: options.ipmiOptions.username,
-        ipmiVersion: options.ipmiOptions.ipmiVersion,
-        privilegeLevel: options.ipmiOptions.privilegeLevel,
-      });
-
-      // Create IPMI protocol instance
-      const ipmiProtocol = await this.protocolFactory.createProtocol('ipmi');
-      this.ipmiProtocols.set(sessionId, ipmiProtocol);
-
-      const ipmiSession = await ipmiProtocol.createSession({
-        command: options.command,
-        args: options.args,
-        cwd: options.cwd,
-        env: options.env,
-        streaming: options.streaming || true,
-        timeout: options.timeout,
-        detectErrors: options.detectErrors,
-        ...options.ipmiOptions,
-      });
-
-      // Update console session
-      session.status = 'running';
-      session.pid = undefined; // IPMI sessions don't have PIDs
-      this.sessions.set(sessionId, session);
-
-      // Setup IPMI event handlers
-      this.setupIPMIEventHandlers(sessionId, ipmiSession);
-
-      // Register with session manager
-      await this.sessionManager.updateSessionStatus(sessionId, 'running', {
-        host: options.ipmiOptions.host,
-        port: options.ipmiOptions.port,
-        ipmiVersion: options.ipmiOptions.ipmiVersion,
-        privilegeLevel: options.ipmiOptions.privilegeLevel,
-        cipherSuite: options.ipmiOptions.cipherSuite,
-        interface: options.ipmiOptions.interface,
-      });
-
-      // Start IPMI monitoring if enabled
-      if (options.monitoring?.enableMetrics) {
-        await this.startIPMIMonitoring(sessionId, options.ipmiOptions);
-      }
-
-      this.logger.info(`IPMI session ${sessionId} created successfully`);
-      return sessionId;
-    } catch (error) {
-      this.logger.error(`Failed to create IPMI session ${sessionId}:`, error);
-
-      // Update session status to failed
-      session.status = 'crashed';
-      this.sessions.set(sessionId, session);
-
-      await this.sessionManager.updateSessionStatus(sessionId, 'failed', {
-        error: error instanceof Error ? error.message : String(error),
-      });
-
-      throw error;
-    }
+    return this.ipmiSessionManager.createSession(sessionId, session, options);
   }
 
-  /**
-   * Setup IPMI event handlers
-   */
-  private setupIPMIEventHandlers(sessionId: string, ipmiSession: any): void {
-    // Handle session output
-    ipmiSession.on(
-      'output',
-      (data: { type: 'stdout' | 'stderr'; data: string }) => {
-        this.emit('output', {
-          sessionId,
-          type: data.type,
-          data: data.data,
-          timestamp: new Date(),
-        });
-      }
-    );
-
-    // Handle SOL console data
-    ipmiSession.on('sol-data', (data: Buffer) => {
-      this.emit('output', {
-        sessionId,
-        type: 'stdout',
-        data: data.toString(),
-        timestamp: new Date(),
-      });
-    });
-
-    // Handle sensor data
-    ipmiSession.on('sensor-data', (sensorData: unknown) => {
-      this.emit('sensor-data', {
-        sessionId,
-        sensorData,
-        timestamp: new Date(),
-      });
-    });
-
-    // Handle power state changes
-    ipmiSession.on('power-state-change', (state: string) => {
-      this.emit('power-state-change', {
-        sessionId,
-        powerState: state,
-        timestamp: new Date(),
-      });
-    });
-
-    // Handle IPMI events
-    ipmiSession.on('ipmi-event', (event: unknown) => {
-      this.emit('ipmi-event', {
-        sessionId,
-        event,
-        timestamp: new Date(),
-      });
-    });
-
-    // Handle session errors
-    ipmiSession.on('error', (error: Error) => {
-      this.logger.error(`IPMI session ${sessionId} error:`, error);
-      this.emit('sessionError', {
-        sessionId,
-        error: error.message,
-        timestamp: new Date(),
-      });
-    });
-
-    // Handle session close
-    ipmiSession.on('close', () => {
-      this.handleIPMISessionClosed(sessionId);
-    });
-  }
+  // setupIPMIEventHandlers() — removed, now internal to IPMISessionManager
+  // startIPMIMonitoring() — removed, now internal to IPMISessionManager
+  // handleIPMISessionClosed() — removed, now internal to IPMISessionManager
 
   /**
-   * Start IPMI monitoring
-   */
-  private async startIPMIMonitoring(
-    sessionId: string,
-    options: import('../types/index.js').IPMIConnectionOptions
-  ): Promise<void> {
-    try {
-      // Start sensor monitoring
-      const sensorInterval = setInterval(async () => {
-        try {
-          const sensors = await this.readIPMISensors(sessionId);
-          if (sensors && sensors.length > 0) {
-            this.emit('sensor-readings', {
-              sessionId,
-              sensors,
-              timestamp: new Date(),
-            });
-          }
-        } catch (error) {
-          this.logger.warn(
-            `Failed to read sensors for session ${sessionId}:`,
-            error
-          );
-        }
-      }, 30000); // Default 30 second polling interval
-
-      // Start event log monitoring (always enabled for now)
-      const eventInterval = setInterval(async () => {
-        try {
-          const events = await this.getIPMIEventLog(sessionId);
-          if (events && events.length > 0) {
-            events.forEach((event) => {
-              this.emit('ipmi-event', {
-                sessionId,
-                event,
-                timestamp: new Date(),
-              });
-            });
-          }
-        } catch (error) {
-          this.logger.warn(
-            `Failed to read event log for session ${sessionId}:`,
-            error
-          );
-        }
-      }, 60000); // Default 60 second polling interval
-
-      // Store intervals for cleanup
-      this.ipmiMonitoringIntervals.set(sessionId, [
-        sensorInterval,
-        eventInterval,
-      ]);
-    } catch (error) {
-      this.logger.error(
-        `Failed to start IPMI monitoring for session ${sessionId}:`,
-        error
-      );
-    }
-  }
-
-  /**
-   * Handle IPMI session closed
-   */
-  private async handleIPMISessionClosed(sessionId: string): Promise<void> {
-    try {
-      this.logger.info(`IPMI session ${sessionId} closed`);
-
-      // Clean up monitoring intervals
-      const intervals = this.ipmiMonitoringIntervals.get(sessionId);
-      if (intervals) {
-        if (Array.isArray(intervals)) {
-          intervals.forEach((interval) => clearInterval(interval));
-        } else {
-          clearInterval(intervals);
-        }
-        this.ipmiMonitoringIntervals.delete(sessionId);
-      }
-
-      // Update session status
-      const session = this.sessions.get(sessionId);
-      if (session) {
-        session.status = 'closed';
-        this.sessions.set(sessionId, session);
-      }
-
-      // Clean up session data
-      this.ipmiSessions.delete(sessionId);
-
-      // Update session manager
-      await this.sessionManager.updateSessionStatus(sessionId, 'terminated');
-
-      // Emit session closed event
-      this.emit('sessionClosed', sessionId);
-    } catch (error) {
-      this.logger.error(
-        `Error handling IPMI session close for ${sessionId}:`,
-        error
-      );
-    }
-  }
-
-  /**
-   * Send input to IPMI session (SOL console)
+   * Send input to IPMI session (SOL console) — delegates to IPMISessionManager
    */
   async sendIPMIInput(sessionId: string, input: string): Promise<void> {
-    const ipmiState = this.ipmiSessions.get(sessionId);
-    if (!ipmiState) {
-      throw new Error(`IPMI session ${sessionId} not found or inactive`);
-    }
-
-    try {
-      const ipmiProtocol = this.ipmiProtocols.get(sessionId);
-      if (!ipmiProtocol) {
-        throw new Error(`IPMI protocol not found for session ${sessionId}`);
-      }
-      await ipmiProtocol.sendInput(sessionId, input);
-
-      this.logger.debug(
-        `Input sent to IPMI session ${sessionId}: ${input.substring(0, 50)}${input.length > 50 ? '...' : ''}`
-      );
-    } catch (error) {
-      this.logger.error(
-        `Failed to send input to IPMI session ${sessionId}:`,
-        error
-      );
-      throw error;
-    }
+    return this.ipmiSessionManager.sendIPMIInput(sessionId, input);
   }
 
   /**
-   * Execute IPMI power control operation
+   * Execute IPMI power control operation — delegates to IPMISessionManager
    */
   async executeIPMIPowerControl(
     sessionId: string,
     operation: 'on' | 'off' | 'reset' | 'cycle' | 'status'
   ): Promise<unknown> {
-    const ipmiState = this.ipmiSessions.get(sessionId);
-    if (!ipmiState) {
-      throw new Error(`IPMI session ${sessionId} not found or inactive`);
-    }
-
-    try {
-      const ipmiProtocol = this.ipmiProtocols.get(sessionId);
-      if (!ipmiProtocol) {
-        throw new Error(`IPMI protocol not found for session ${sessionId}`);
-      }
-      const result = await ipmiProtocol.executeCommand(sessionId, 'chassis', [
-        'power',
-        operation,
-      ]);
-
-      this.logger.info(
-        `Power control operation '${operation}' executed on IPMI session ${sessionId}`
-      );
-
-      // Emit power state change event
-      this.emit('power-state-change', {
-        sessionId,
-        operation,
-        result,
-        timestamp: new Date(),
-      });
-
-      return result;
-    } catch (error) {
-      this.logger.error(
-        `Failed to execute power control operation '${operation}' on IPMI session ${sessionId}:`,
-        error
-      );
-      throw error;
-    }
+    return this.ipmiSessionManager.executeIPMIPowerControl(sessionId, operation);
   }
 
   /**
-   * Read IPMI sensors
+   * Read IPMI sensors — delegates to IPMISessionManager
    */
   async readIPMISensors(sessionId: string): Promise<unknown[]> {
-    const ipmiState = this.ipmiSessions.get(sessionId);
-    if (!ipmiState) {
-      throw new Error(`IPMI session ${sessionId} not found or inactive`);
-    }
-
-    try {
-      const ipmiProtocol = this.ipmiProtocols.get(sessionId);
-      if (!ipmiProtocol) {
-        throw new Error(`IPMI protocol not found for session ${sessionId}`);
-      }
-      // Execute sensor reading command
-      await ipmiProtocol.executeCommand(sessionId, 'sensor', [
-        'reading',
-        'all',
-      ]);
-
-      // Since executeCommand returns void, return a placeholder array
-      // In a real implementation, this would be handled via events or callbacks
-      const sensors: unknown[] = [];
-      this.logger.debug(
-        `Executed sensor reading command for IPMI session ${sessionId}`
-      );
-
-      return sensors;
-    } catch (error) {
-      this.logger.error(
-        `Failed to read sensors from IPMI session ${sessionId}:`,
-        error
-      );
-      throw error;
-    }
+    return this.ipmiSessionManager.readIPMISensors(sessionId);
   }
 
   /**
-   * Get IPMI system event log
+   * Get IPMI system event log — delegates to IPMISessionManager
    */
   async getIPMIEventLog(sessionId: string): Promise<unknown[]> {
-    const ipmiState = this.ipmiSessions.get(sessionId);
-    if (!ipmiState) {
-      throw new Error(`IPMI session ${sessionId} not found or inactive`);
-    }
-
-    try {
-      const ipmiProtocol = this.ipmiProtocols.get(sessionId);
-      if (!ipmiProtocol) {
-        throw new Error(`IPMI protocol not found for session ${sessionId}`);
-      }
-      // Execute event log reading command
-      await ipmiProtocol.executeCommand(sessionId, 'sel', ['list']);
-
-      // Since executeCommand returns void, return a placeholder array
-      // In a real implementation, this would be handled via events or callbacks
-      const events: unknown[] = [];
-      this.logger.debug(
-        `Executed event log reading command for IPMI session ${sessionId}`
-      );
-
-      return events;
-    } catch (error) {
-      this.logger.error(
-        `Failed to read event log from IPMI session ${sessionId}:`,
-        error
-      );
-      throw error;
-    }
+    return this.ipmiSessionManager.getIPMIEventLog(sessionId);
   }
 
   /**
-   * Mount virtual media via IPMI
+   * Mount virtual media via IPMI — delegates to IPMISessionManager
    */
   async mountIPMIVirtualMedia(
     sessionId: string,
     mediaType: 'cd' | 'floppy' | 'usb',
     imageUrl: string
   ): Promise<void> {
-    const ipmiState = this.ipmiSessions.get(sessionId);
-    if (!ipmiState) {
-      throw new Error(`IPMI session ${sessionId} not found or inactive`);
-    }
-
-    try {
-      const ipmiProtocol = this.ipmiProtocols.get(sessionId);
-      if (!ipmiProtocol) {
-        throw new Error(`IPMI protocol not found for session ${sessionId}`);
-      }
-      await ipmiProtocol.executeCommand(sessionId, 'sol', [
-        'mount',
-        mediaType,
-        imageUrl,
-      ]);
-
-      this.logger.info(
-        `Virtual media '${mediaType}' mounted from '${imageUrl}' on IPMI session ${sessionId}`
-      );
-
-      // Emit virtual media event
-      this.emit('virtual-media-mounted', {
-        sessionId,
-        mediaType,
-        imageUrl,
-        timestamp: new Date(),
-      });
-    } catch (error) {
-      this.logger.error(
-        `Failed to mount virtual media on IPMI session ${sessionId}:`,
-        error
-      );
-      throw error;
-    }
+    return this.ipmiSessionManager.mountIPMIVirtualMedia(sessionId, mediaType, imageUrl);
   }
 
   /**
-   * Unmount virtual media via IPMI
+   * Unmount virtual media via IPMI — delegates to IPMISessionManager
    */
   async unmountIPMIVirtualMedia(
     sessionId: string,
     mediaType: 'cd' | 'floppy' | 'usb'
   ): Promise<void> {
-    const ipmiState = this.ipmiSessions.get(sessionId);
-    if (!ipmiState) {
-      throw new Error(`IPMI session ${sessionId} not found or inactive`);
-    }
-
-    try {
-      const ipmiProtocol = this.ipmiProtocols.get(sessionId);
-      if (!ipmiProtocol) {
-        throw new Error(`IPMI protocol not found for session ${sessionId}`);
-      }
-      await ipmiProtocol.executeCommand(sessionId, 'sol', [
-        'unmount',
-        mediaType,
-      ]);
-
-      this.logger.info(
-        `Virtual media '${mediaType}' unmounted from IPMI session ${sessionId}`
-      );
-
-      // Emit virtual media event
-      this.emit('virtual-media-unmounted', {
-        sessionId,
-        mediaType,
-        timestamp: new Date(),
-      });
-    } catch (error) {
-      this.logger.error(
-        `Failed to unmount virtual media on IPMI session ${sessionId}:`,
-        error
-      );
-      throw error;
-    }
+    return this.ipmiSessionManager.unmountIPMIVirtualMedia(sessionId, mediaType);
   }
 
   /**
-   * Update firmware via IPMI
+   * Update firmware via IPMI — delegates to IPMISessionManager
    */
   async updateIPMIFirmware(
     sessionId: string,
     firmwareType: 'bios' | 'bmc' | 'fpga',
     firmwarePath: string
   ): Promise<void> {
-    const ipmiState = this.ipmiSessions.get(sessionId);
-    if (!ipmiState) {
-      throw new Error(`IPMI session ${sessionId} not found or inactive`);
-    }
-
-    try {
-      this.logger.info(
-        `Starting firmware update for '${firmwareType}' on IPMI session ${sessionId}`
-      );
-
-      const ipmiProtocol = this.ipmiProtocols.get(sessionId);
-      if (!ipmiProtocol) {
-        throw new Error(`IPMI protocol not found for session ${sessionId}`);
-      }
-      await ipmiProtocol.executeCommand(sessionId, 'hpm', [
-        'upgrade',
-        firmwarePath,
-        'component',
-        firmwareType,
-      ]);
-
-      this.logger.info(
-        `Firmware update for '${firmwareType}' completed on IPMI session ${sessionId}`
-      );
-
-      // Emit firmware update event
-      this.emit('firmware-update-completed', {
-        sessionId,
-        firmwareType,
-        firmwarePath,
-        timestamp: new Date(),
-      });
-    } catch (error) {
-      this.logger.error(
-        `Failed to update firmware on IPMI session ${sessionId}:`,
-        error
-      );
-      throw error;
-    }
+    return this.ipmiSessionManager.updateIPMIFirmware(sessionId, firmwareType, firmwarePath);
   }
 
   /**
-   * Get IPMI system information
+   * Get IPMI system information — delegates to IPMISessionManager
    */
   async getIPMISystemInfo(sessionId: string): Promise<unknown> {
-    const ipmiState = this.ipmiSessions.get(sessionId);
-    if (!ipmiState) {
-      throw new Error(`IPMI session ${sessionId} not found or inactive`);
-    }
-
-    try {
-      const ipmiProtocol = this.ipmiProtocols.get(sessionId);
-      if (!ipmiProtocol) {
-        throw new Error(`IPMI protocol not found for session ${sessionId}`);
-      }
-      const systemInfo = await ipmiProtocol.executeCommand(sessionId, 'mc', [
-        'info',
-      ]);
-
-      this.logger.debug(`Retrieved system info from IPMI session ${sessionId}`);
-
-      return systemInfo;
-    } catch (error) {
-      this.logger.error(
-        `Failed to get system info from IPMI session ${sessionId}:`,
-        error
-      );
-      throw error;
-    }
+    return this.ipmiSessionManager.getIPMISystemInfo(sessionId);
   }
 
   /**
-   * Configure IPMI LAN settings
+   * Configure IPMI LAN settings — delegates to IPMISessionManager
    */
   async configureIPMILAN(
     sessionId: string,
     channel: number,
     settings: Record<string, unknown>
   ): Promise<void> {
-    const ipmiState = this.ipmiSessions.get(sessionId);
-    if (!ipmiState) {
-      throw new Error(`IPMI session ${sessionId} not found or inactive`);
-    }
-
-    try {
-      const ipmiProtocol = this.ipmiProtocols.get(sessionId);
-      if (!ipmiProtocol) {
-        throw new Error(`IPMI protocol not found for session ${sessionId}`);
-      }
-
-      // Configure LAN parameters
-      for (const [param, value] of Object.entries(settings)) {
-        await ipmiProtocol.executeCommand(sessionId, 'lan', [
-          'set',
-          channel.toString(),
-          param,
-          String(value),
-        ]);
-      }
-
-      this.logger.info(
-        `LAN configuration updated for channel ${channel} on IPMI session ${sessionId}`
-      );
-    } catch (error) {
-      this.logger.error(
-        `Failed to configure LAN settings on IPMI session ${sessionId}:`,
-        error
-      );
-      throw error;
-    }
+    return this.ipmiSessionManager.configureIPMILAN(sessionId, channel, settings);
   }
 
   /**
