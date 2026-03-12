@@ -31,8 +31,6 @@ import {
   VNCSession,
   VNCFramebuffer,
   VNCSecurityType,
-  WebSocketTerminalConnectionOptions,
-  WebSocketTerminalSessionState,
   IPCSessionState,
   IPMISessionState,
   AnsibleConnectionOptions,
@@ -100,6 +98,10 @@ import {
 } from './TimeoutRecoveryManager.js';
 import { SerialSessionManager } from './SerialSessionManager.js';
 import { ProtocolSessionHost } from './ProtocolSessionManagerBase.js';
+import {
+  WebSocketTerminalSessionManager,
+  WebSocketTerminalSessionHost,
+} from './WebSocketTerminalSessionManager.js';
 // JobManager functionality integrated into SessionManager
 import PQueue from 'p-queue';
 import { platform } from 'os';
@@ -149,6 +151,8 @@ export class ConsoleManager
 
   // Serial session management — owned by SerialSessionManager
   private serialSessionManager!: SerialSessionManager;
+  // WebSocket terminal session management — owned by WebSocketTerminalSessionManager
+  private wsTerminalSessionManager!: WebSocketTerminalSessionManager;
 
   // Convenience getters for sub-components (backwards compat within ConsoleManager)
   private get healthMonitor(): HealthMonitor {
@@ -190,7 +194,7 @@ export class ConsoleManager
   private kubernetesProtocol?: any;
   private awsSSMProtocol?: any;
   private azureProtocol?: any;
-  private webSocketTerminalProtocol?: any;
+  // webSocketTerminalProtocol — removed, now managed by WebSocketTerminalSessionManager
   private rdpProtocol?: any;
   private wslProtocol?: any;
   private ansibleProtocol?: any;
@@ -209,7 +213,7 @@ export class ConsoleManager
     string,
     NodeJS.Timeout | NodeJS.Timeout[]
   >;
-  private webSocketTerminalSessions: Map<string, WebSocketTerminalSessionState>;
+  // webSocketTerminalSessions — removed, now managed by WebSocketTerminalSessionManager
   private ansibleSessions: Map<
     string,
     import('../types/index.js').AnsibleSession
@@ -256,8 +260,6 @@ export class ConsoleManager
     this.ipmiProtocols = new Map();
     this.ipmiSessions = new Map();
     this.ipmiMonitoringIntervals = new Map();
-    this.webSocketTerminalSessions = new Map();
-
     this.errorDetector = new ErrorDetector();
     this.outputFilterEngine = new OutputFilterEngine();
     this.paginationManager = new OutputPaginationManager({
@@ -343,6 +345,12 @@ export class ConsoleManager
     // Initialize serial session manager
     this.serialSessionManager = new SerialSessionManager(
       this.buildProtocolSessionHost(),
+      this.logger
+    );
+
+    // Initialize WebSocket terminal session manager
+    this.wsTerminalSessionManager = new WebSocketTerminalSessionManager(
+      this.buildWebSocketTerminalSessionHost(),
       this.logger
     );
 
@@ -1019,6 +1027,17 @@ export class ConsoleManager
         return 0;
       },
       getLogger: () => this.logger,
+    };
+  }
+
+  /**
+   * Build a WebSocketTerminalSessionHost — extends ProtocolSessionHost with updateSessionActivity.
+   */
+  private buildWebSocketTerminalSessionHost(): WebSocketTerminalSessionHost {
+    return {
+      ...this.buildProtocolSessionHost(),
+      updateSessionActivity: (id: string, metadata?: Record<string, unknown>) =>
+        this.sessionManager.updateSessionActivity(id, metadata),
     };
   }
 
@@ -4933,12 +4952,12 @@ export class ConsoleManager
           return this.sendInputToWinRM(sessionId, input);
         }
 
-        // Handle WebSocket terminal session
+        // Handle WebSocket terminal session — delegates to WebSocketTerminalSessionManager
         if (
           session.webSocketTerminalOptions &&
-          this.webSocketTerminalProtocol
+          this.wsTerminalSessionManager.hasSession(sessionId)
         ) {
-          return this.sendInputToWebSocketTerminal(sessionId, input);
+          return this.wsTerminalSessionManager.sendInput(sessionId, input);
         }
 
         // Handle regular process session
@@ -4949,7 +4968,7 @@ export class ConsoleManager
         operationName: 'send_input',
         strategyName: this.sshChannels.has(sessionId)
           ? 'ssh'
-          : this.webSocketTerminalSessions.has(sessionId)
+          : this.wsTerminalSessionManager.hasSession(sessionId)
             ? 'websocket-terminal'
             : 'generic',
         context: { inputLength: input.length },
@@ -6691,6 +6710,9 @@ export class ConsoleManager
     // Clean up serial session manager
     await this.serialSessionManager.destroy();
 
+    // Clean up WebSocket terminal session manager
+    await this.wsTerminalSessionManager.destroy();
+
     // Clean up all cached protocols
     for (const [type, protocol] of this.protocolCache) {
       try {
@@ -6709,7 +6731,6 @@ export class ConsoleManager
       { name: 'rdp', instance: this.rdpProtocol },
       { name: 'wsl', instance: this.wslProtocol },
       { name: 'ansible', instance: this.ansibleProtocol },
-      { name: 'websocket-terminal', instance: this.webSocketTerminalProtocol },
     ];
     for (const { name, instance } of legacyProtocols) {
       if (instance && typeof instance.cleanup === 'function') {
@@ -6732,7 +6753,6 @@ export class ConsoleManager
     this.vncSessions?.clear();
     this.ipcSessions?.clear();
     this.ipmiSessions?.clear();
-    this.webSocketTerminalSessions?.clear();
 
     // Shutdown self-healing components
     if (this.selfHealingEnabled) {
@@ -7878,178 +7898,9 @@ export class ConsoleManager
     this.logger.info('RDP Protocol integration initialized');
   }
 
-  /**
-   * Setup WebSocket Terminal protocol integration
-   */
-  private setupWebSocketTerminalIntegration(): void {
-    this.webSocketTerminalProtocol.on(
-      'session_connected',
-      (data: { sessionId: string }) => {
-        this.logger.info(
-          `WebSocket terminal session connected: ${data.sessionId}`
-        );
-        this.emit('websocket-terminal-connected', data);
-      }
-    );
-
-    this.webSocketTerminalProtocol.on(
-      'session_disconnected',
-      (data: { sessionId: string }) => {
-        this.logger.info(
-          `WebSocket terminal session disconnected: ${data.sessionId}`
-        );
-        this.webSocketTerminalSessions.delete(data.sessionId);
-        this.emit('websocket-terminal-disconnected', data);
-      }
-    );
-
-    this.webSocketTerminalProtocol.on(
-      'session_reconnecting',
-      (data: { sessionId: string }) => {
-        this.logger.info(
-          `WebSocket terminal session reconnecting: ${data.sessionId}`
-        );
-        this.emit('websocket-terminal-reconnecting', data);
-      }
-    );
-
-    this.webSocketTerminalProtocol.on(
-      'data',
-      (data: { sessionId: string; data: string | Buffer }) => {
-        this.handleWebSocketTerminalOutput(data.sessionId, data.data);
-      }
-    );
-
-    this.webSocketTerminalProtocol.on(
-      'error',
-      (data: { sessionId: string; error: Error }) => {
-        this.logger.error(
-          `WebSocket terminal session error: ${data.sessionId}`,
-          data.error
-        );
-        this.emit('websocket-terminal-error', data);
-
-        // Attempt automatic recovery
-        this.attemptWebSocketTerminalRecovery(data.sessionId, data.error);
-      }
-    );
-
-    this.webSocketTerminalProtocol.on(
-      'file_transfer_progress',
-      (data: { sessionId: string; transfer: unknown }) => {
-        this.emit('websocket-terminal-file-transfer-progress', data);
-      }
-    );
-
-    this.webSocketTerminalProtocol.on(
-      'multiplex_session_created',
-      (data: { sessionId: string; multiplexSession: unknown }) => {
-        this.emit('websocket-terminal-multiplex-session-created', data);
-      }
-    );
-
-    this.logger.info('WebSocket Terminal Protocol integration initialized');
-  }
-
-  /**
-   * Handle WebSocket Terminal output
-   */
-  private handleWebSocketTerminalOutput(
-    sessionId: string,
-    data: string | Buffer
-  ): void {
-    const output: ConsoleOutput = {
-      sessionId,
-      type: 'stdout',
-      data: typeof data === 'string' ? data : data.toString('utf8'),
-      timestamp: new Date(),
-      raw: typeof data === 'string' ? data : data.toString('utf8'),
-    };
-
-    // Store output in buffer
-    if (!this.outputBuffers.has(sessionId)) {
-      this.outputBuffers.set(sessionId, []);
-    }
-    const buffer = this.outputBuffers.get(sessionId)!;
-    buffer.push(output);
-
-    // Limit buffer size
-    if (buffer.length > this.maxBufferSize) {
-      buffer.shift();
-    }
-
-    // Emit output event
-    this.emit('output', output);
-
-    // Update session last activity
-    const wsSession = this.webSocketTerminalSessions.get(sessionId);
-    if (wsSession) {
-      wsSession.lastActivity = new Date();
-      this.webSocketTerminalSessions.set(sessionId, wsSession);
-    }
-
-    // Update session in main sessions map
-    const session = this.sessions.get(sessionId);
-    if (session) {
-      // Update command execution if there's an active command
-      const activeCommands = Array.from(session.activeCommands.values());
-      if (activeCommands.length > 0) {
-        const latestCommand = activeCommands[activeCommands.length - 1];
-        if (latestCommand.status === 'executing') {
-          latestCommand.output.push(output);
-        }
-      }
-    }
-  }
-
-  /**
-   * Attempt WebSocket Terminal recovery
-   */
-  private async attemptWebSocketTerminalRecovery(
-    sessionId: string,
-    error: Error
-  ): Promise<void> {
-    try {
-      this.logger.info(
-        `Attempting WebSocket terminal recovery for session: ${sessionId}`
-      );
-
-      const session = this.sessions.get(sessionId);
-      if (!session || !session.webSocketTerminalOptions) {
-        this.logger.warn(
-          `Cannot recover WebSocket terminal session ${sessionId}: session or options not found`
-        );
-        return;
-      }
-
-      // Close existing session
-      await this.webSocketTerminalProtocol.closeSession(sessionId);
-
-      // Wait a moment before reconnecting
-      await new Promise((resolve) => setTimeout(resolve, 1000));
-
-      // Recreate session
-      const wsSession = await this.webSocketTerminalProtocol.createSession(
-        sessionId,
-        session.webSocketTerminalOptions
-      );
-      this.webSocketTerminalSessions.set(sessionId, wsSession.state);
-
-      this.logger.info(
-        `WebSocket terminal session ${sessionId} recovered successfully`
-      );
-      this.emit('websocket-terminal-recovered', { sessionId });
-    } catch (recoveryError) {
-      this.logger.error(
-        `Failed to recover WebSocket terminal session ${sessionId}:`,
-        recoveryError
-      );
-      this.emit('websocket-terminal-recovery-failed', {
-        sessionId,
-        error: recoveryError,
-      });
-    }
-  }
+  // setupWebSocketTerminalIntegration() — removed, now in WebSocketTerminalSessionManager.setupEventHandlers()
+  // handleWebSocketTerminalOutput() — removed, now in WebSocketTerminalSessionManager.handleOutput()
+  // attemptWebSocketTerminalRecovery() — removed, now in WebSocketTerminalSessionManager.attemptRecovery()
 
   /**
    * Handle RDP output
@@ -8946,149 +8797,8 @@ export class ConsoleManager
     }
   }
 
-  /**
-   * Send input to WebSocket terminal session
-   */
-  private async sendInputToWebSocketTerminal(
-    sessionId: string,
-    input: string
-  ): Promise<void> {
-    try {
-      const session = this.sessions.get(sessionId);
-      if (!session) {
-        throw new Error(`WebSocket terminal session ${sessionId} not found`);
-      }
-
-      const webSocketSession = this.webSocketTerminalSessions.get(sessionId);
-      if (!webSocketSession) {
-        throw new Error(
-          `WebSocket terminal session state ${sessionId} not found`
-        );
-      }
-
-      this.logger.debug(
-        `Sending input to WebSocket terminal session ${sessionId}: ${input.substring(0, 50)}...`
-      );
-
-      // Send input through WebSocket terminal protocol
-      await this.webSocketTerminalProtocol.sendInput(sessionId, input);
-
-      // Update session state
-      webSocketSession.lastActivity = new Date();
-      webSocketSession.bytesTransferred += input.length;
-      this.webSocketTerminalSessions.set(sessionId, webSocketSession);
-
-      // Update session activity
-      await this.sessionManager.updateSessionActivity(sessionId, {
-        lastActivity: new Date(),
-        bytesTransferred: webSocketSession.bytesTransferred,
-        inputCount: (webSocketSession as any).inputCount
-          ? (webSocketSession as any).inputCount + 1
-          : 1,
-      });
-    } catch (error) {
-      this.logger.error(
-        `Failed to send input to WebSocket terminal session ${sessionId}:`,
-        error
-      );
-
-      // If it's a connection error, try to reconnect
-      if (
-        error.message.includes('connection') ||
-        error.message.includes('websocket')
-      ) {
-        const webSocketSession = this.webSocketTerminalSessions.get(sessionId);
-        if (webSocketSession && webSocketSession.supportsReconnection) {
-          this.logger.info(
-            `Attempting to reconnect WebSocket terminal session ${sessionId}`
-          );
-          try {
-            await this.webSocketTerminalProtocol.reconnectSession(sessionId);
-            // Retry sending the input after reconnection
-            await this.webSocketTerminalProtocol.sendInput(sessionId, input);
-            return;
-          } catch (reconnectError) {
-            this.logger.error(
-              `Failed to reconnect WebSocket terminal session ${sessionId}:`,
-              reconnectError
-            );
-          }
-        }
-      }
-
-      throw error;
-    }
-  }
-
-  /**
-   * Create WebSocket Terminal session
-   */
-  private async createWebSocketTerminalSession(
-    sessionId: string,
-    session: ConsoleSession,
-    options: SessionOptions
-  ): Promise<string> {
-    if (!options.webSocketTerminalOptions) {
-      throw new Error(
-        'WebSocket Terminal options are required for WebSocket Terminal session'
-      );
-    }
-
-    try {
-      this.logger.info(`Creating WebSocket Terminal session ${sessionId}`, {
-        url: options.webSocketTerminalOptions.url,
-        protocol: options.webSocketTerminalOptions.protocol,
-        terminalType: options.webSocketTerminalOptions.terminalType,
-      });
-
-      // Create WebSocket Terminal session through the protocol
-      const wsTerminalSession =
-        await this.webSocketTerminalProtocol.createSession(
-          sessionId,
-          options.webSocketTerminalOptions
-        );
-
-      // Store WebSocket terminal session state
-      this.webSocketTerminalSessions.set(sessionId, wsTerminalSession.state);
-
-      // Update console session
-      session.status = 'running';
-      session.pid = undefined; // WebSocket terminal sessions don't have PIDs
-      session.webSocketTerminalState = wsTerminalSession.state;
-      this.sessions.set(sessionId, session);
-
-      // Register with session manager
-      await this.sessionManager.updateSessionStatus(sessionId, 'running', {
-        webSocketUrl: options.webSocketTerminalOptions.url,
-        protocol: options.webSocketTerminalOptions.protocol,
-        terminalType: options.webSocketTerminalOptions.terminalType,
-        terminalSize: {
-          cols: options.webSocketTerminalOptions.cols || 80,
-          rows: options.webSocketTerminalOptions.rows || 24,
-        },
-      });
-
-      this.logger.info(
-        `WebSocket Terminal session ${sessionId} created successfully`
-      );
-      return sessionId;
-    } catch (error) {
-      this.logger.error(
-        `Failed to create WebSocket Terminal session ${sessionId}:`,
-        error
-      );
-
-      // Update session status to failed
-      session.status = 'crashed';
-      this.sessions.set(sessionId, session);
-
-      await this.sessionManager.updateSessionStatus(sessionId, 'failed', {
-        error: error instanceof Error ? error.message : String(error),
-      });
-
-      throw error;
-    }
-  }
+  // sendInputToWebSocketTerminal() — removed, now in WebSocketTerminalSessionManager.sendInput()
+  // createWebSocketTerminalSession() — removed, now in WebSocketTerminalSessionManager.createSession()
 
   /**
    * Create IPMI session
