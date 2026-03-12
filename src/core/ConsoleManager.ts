@@ -19,23 +19,22 @@ import {
   SerialConnectionOptions,
   WSLConnectionOptions,
   WSLSession,
-  SFTPSessionOptions,
-  FileTransferSession,
+  // SFTPSessionOptions — removed, now used only in SFTPSessionManager
+  // FileTransferSession — removed, now used only in SFTPSessionManager
   SFTPTransferOptions,
   // AWSSSMConnectionOptions — removed, now used only in AWSSSMSessionManager
   RDPConnectionOptions,
   RDPSession,
   WinRMConnectionOptions,
-  WinRMSessionState,
   VNCConnectionOptions,
-  VNCSession,
-  VNCFramebuffer,
-  VNCSecurityType,
-  IPCSessionState,
-  IPMISessionState,
+  // VNCSession — removed, now used only by VNCSessionManager
+  // VNCFramebuffer — removed, now used only by VNCSessionManager
+  // VNCSecurityType — removed, now used only by VNCSessionManager
+  // IPCSessionState — removed, now used by IPCSessionManager
+  // IPMISessionState — removed, now used by IPMISessionManager
   AnsibleConnectionOptions,
   IPCConnectionOptions,
-  IPMIConnectionOptions,
+  // IPMIConnectionOptions — removed, now used by IPMISessionManager
 } from '../types/index.js';
 import { ErrorDetector } from './ErrorDetector.js';
 import { Logger } from '../utils/logger.js';
@@ -109,6 +108,12 @@ import {
 } from './AWSSSMSessionManager.js';
 import { KubernetesSessionManager } from './KubernetesSessionManager.js';
 import { RDPSessionManager } from './RDPSessionManager.js';
+import { IPCSessionManager } from './IPCSessionManager.js';
+import { SFTPSessionManager } from './SFTPSessionManager.js';
+import { WinRMSessionManager } from './WinRMSessionManager.js';
+import { WSLSessionManager } from './WSLSessionManager.js';
+import { VNCSessionManager, VNCSessionHost } from './VNCSessionManager.js';
+import { IPMISessionManager } from './IPMISessionManager.js';
 // JobManager functionality integrated into SessionManager
 import PQueue from 'p-queue';
 import { platform } from 'os';
@@ -123,8 +128,8 @@ export class ConsoleManager
   private sshClients: Map<string, SSHClient>;
   private sshChannels: Map<string, ClientChannel>;
   private sshConnectionPool: Map<string, SSHClient>; // Legacy connection pooling for SSH
-  private sftpProtocols: Map<string, any>; // SFTP protocol instances
-  private fileTransferSessions: Map<string, FileTransferSession>; // File transfer session tracking
+  // sftpProtocols — removed, now managed by SFTPSessionManager
+  // fileTransferSessions — removed, now managed by SFTPSessionManager
   private outputBuffers: Map<string, ConsoleOutput[]>;
   private paginationManager: OutputPaginationManager;
   private streamManagers: Map<string, StreamManager>;
@@ -168,6 +173,18 @@ export class ConsoleManager
   private kubernetesSessionManager!: KubernetesSessionManager;
   // RDP session management — owned by RDPSessionManager
   private rdpSessionManager!: RDPSessionManager;
+  // IPC session management — owned by IPCSessionManager
+  private ipcSessionManager!: IPCSessionManager;
+  // SFTP session management — owned by SFTPSessionManager
+  private sftpSessionManager!: SFTPSessionManager;
+  // WinRM session management — owned by WinRMSessionManager
+  private winrmSessionManager!: WinRMSessionManager;
+  // WSL session management — owned by WSLSessionManager
+  private wslSessionManager!: WSLSessionManager;
+  // VNC session management — owned by VNCSessionManager
+  private vncSessionManager!: VNCSessionManager;
+  // IPMI session management — owned by IPMISessionManager
+  private ipmiSessionManager!: IPMISessionManager;
 
   // Convenience getters for sub-components (backwards compat within ConsoleManager)
   private get healthMonitor(): HealthMonitor {
@@ -201,32 +218,26 @@ export class ConsoleManager
   private protocolCache: Map<string, IProtocol> = new Map();
 
   // Legacy protocol instances (to be fully migrated)
-  private winrmProtocols: Map<string, any>;
-  private vncProtocols: Map<string, any>;
-  private ipcProtocols: Map<string, any>;
-  private ipmiProtocols: Map<string, any>;
+  // winrmProtocols — removed, now managed by WinRMSessionManager
+  // vncProtocols — removed, now managed by VNCSessionManager
+  // ipcProtocols — removed, now managed by IPCSessionManager
+  // ipmiProtocols — removed, now managed by IPMISessionManager
   // kubernetesProtocol — removed, now managed by KubernetesSessionManager
   // awsSSMProtocol — removed, now managed by AWSSSMSessionManager
   // azureProtocol — removed, now managed by AzureSessionManager
   // webSocketTerminalProtocol — removed, now managed by WebSocketTerminalSessionManager
   // rdpProtocol — removed, now managed by RDPSessionManager
-  private wslProtocol?: any;
+  // wslProtocol — removed, now managed by WSLSessionManager
   private ansibleProtocol?: any;
 
   // Legacy session tracking (to be migrated)
   // rdpSessions — removed, now managed by RDPSessionManager
-  private winrmSessions: Map<string, WinRMSessionState>;
-  private vncSessions: Map<string, VNCSession>;
-  private vncFramebuffers: Map<string, VNCFramebuffer>;
-  private ipcSessions: Map<string, IPCSessionState>;
-  private ipmiSessions: Map<
-    string,
-    import('../types/index.js').IPMISessionState
-  >;
-  private ipmiMonitoringIntervals: Map<
-    string,
-    NodeJS.Timeout | NodeJS.Timeout[]
-  >;
+  // ipcSessions — removed, now managed by IPCSessionManager
+  // winrmSessions — removed, now managed by WinRMSessionManager
+  // vncSessions — removed, now managed by VNCSessionManager
+  // vncFramebuffers — removed, now managed by VNCSessionManager
+  // ipmiSessions — removed, now managed by IPMISessionManager
+  // ipmiMonitoringIntervals — removed, now managed by IPMISessionManager
   // webSocketTerminalSessions — removed, now managed by WebSocketTerminalSessionManager
   private ansibleSessions: Map<
     string,
@@ -256,23 +267,16 @@ export class ConsoleManager
     this.sshClients = new Map();
     this.sshChannels = new Map();
     this.sshConnectionPool = new Map();
-    this.sftpProtocols = new Map();
-    this.fileTransferSessions = new Map();
+    // sftpProtocols and fileTransferSessions moved to SFTPSessionManager
     this.outputBuffers = new Map();
     this.streamManagers = new Map();
     this.sessionHealthCheckIntervals = new Map();
 
     // Legacy session tracking (to be fully migrated)
-    this.winrmProtocols = new Map();
-    this.winrmSessions = new Map();
-    this.vncProtocols = new Map();
-    this.vncSessions = new Map();
-    this.ipcProtocols = new Map();
-    this.ipcSessions = new Map();
-    this.vncFramebuffers = new Map();
-    this.ipmiProtocols = new Map();
-    this.ipmiSessions = new Map();
-    this.ipmiMonitoringIntervals = new Map();
+    // winrmProtocols and winrmSessions — removed, now managed by WinRMSessionManager
+    // vncProtocols, vncSessions, vncFramebuffers — removed, now managed by VNCSessionManager
+    // ipcProtocols and ipcSessions — removed, now managed by IPCSessionManager
+    // ipmiProtocols, ipmiSessions, ipmiMonitoringIntervals — removed, now managed by IPMISessionManager
     this.errorDetector = new ErrorDetector();
     this.outputFilterEngine = new OutputFilterEngine();
     this.paginationManager = new OutputPaginationManager({
@@ -387,6 +391,42 @@ export class ConsoleManager
 
     // Initialize RDP session manager
     this.rdpSessionManager = new RDPSessionManager(
+      this.buildProtocolSessionHost(),
+      this.logger
+    );
+
+    // Initialize IPC session manager
+    this.ipcSessionManager = new IPCSessionManager(
+      this.buildProtocolSessionHost(),
+      this.logger
+    );
+
+    // Initialize SFTP session manager
+    this.sftpSessionManager = new SFTPSessionManager(
+      this.buildProtocolSessionHost(),
+      this.logger
+    );
+
+    // Initialize WinRM session manager
+    this.winrmSessionManager = new WinRMSessionManager(
+      this.buildProtocolSessionHost(),
+      this.logger
+    );
+
+    // Initialize WSL session manager
+    this.wslSessionManager = new WSLSessionManager(
+      this.buildProtocolSessionHost(),
+      this.logger
+    );
+
+    // Initialize VNC session manager
+    this.vncSessionManager = new VNCSessionManager(
+      this.buildVNCSessionHost(),
+      this.logger
+    );
+
+    // Initialize IPMI session manager
+    this.ipmiSessionManager = new IPMISessionManager(
       this.buildProtocolSessionHost(),
       this.logger
     );
@@ -1074,6 +1114,17 @@ export class ConsoleManager
       ...this.buildProtocolSessionHost(),
       updateSessionActivity: (id: string, metadata?: Record<string, unknown>) =>
         this.sessionManager.updateSessionActivity(id, metadata),
+    };
+  }
+
+  /**
+   * Build a VNCSessionHost — extends ProtocolSessionHost with handleSessionError.
+   */
+  private buildVNCSessionHost(): VNCSessionHost {
+    return {
+      ...this.buildProtocolSessionHost(),
+      handleSessionError: (sid: string, err: Error, op: string) =>
+        this.handleSessionError(sid, err, op),
     };
   }
 
@@ -2575,95 +2626,14 @@ export class ConsoleManager
   }
 
   /**
-   * Create SFTP/SCP file transfer session
+   * Create SFTP/SCP file transfer session — delegates to SFTPSessionManager
    */
   private async createSFTPSession(
     sessionId: string,
     session: ConsoleSession,
     options: SessionOptions
   ): Promise<string> {
-    if (!options.sshOptions) {
-      throw new Error('SSH options are required for SFTP/SCP session');
-    }
-
-    try {
-      this.logger.info(
-        `Creating SFTP session: ${sessionId} for ${options.sshOptions.host}`
-      );
-
-      // Create SFTP session options
-      const sftpOptions: SFTPSessionOptions = {
-        ...options.sshOptions,
-        maxConcurrentTransfers: 3,
-        transferQueue: {
-          maxSize: 100,
-          priorityLevels: 4,
-          timeoutMs: 300000,
-        },
-        bandwidth: {
-          adaptiveThrottling: true,
-        },
-        compressionLevel: 6,
-        keepAlive: {
-          enabled: true,
-          interval: 30000,
-          maxMissed: 3,
-        },
-      };
-
-      // Initialize SFTP protocol
-      const sftpProtocol = (await this.protocolFactory.createProtocol(
-        'sftp'
-      )) as any;
-
-      // Setup event handlers
-      this.setupSFTPEventHandlers(sessionId, sftpProtocol);
-
-      // Connect SFTP
-      await sftpProtocol.connect();
-
-      // Store SFTP protocol instance
-      this.sftpProtocols.set(sessionId, sftpProtocol);
-
-      // Create file transfer session tracking
-      const fileTransferSession: FileTransferSession = {
-        ...session,
-        protocol: options.consoleType as 'sftp' | 'scp',
-        sftpOptions,
-        activeTransfers: new Map(),
-        transferQueue: [],
-        connectionState: sftpProtocol.getConnectionState(),
-        transferStats: {
-          totalTransfers: 0,
-          successfulTransfers: 0,
-          failedTransfers: 0,
-          totalBytesTransferred: 0,
-          averageSpeed: 0,
-        },
-      };
-
-      this.fileTransferSessions.set(sessionId, fileTransferSession);
-
-      // Update session status
-      session.status = 'running';
-      this.sessions.set(sessionId, session);
-
-      this.emit('session-started', {
-        sessionId,
-        type: 'sftp',
-        options: sftpOptions,
-      });
-      this.logger.info(`SFTP session created successfully: ${sessionId}`);
-
-      return sessionId;
-    } catch (error) {
-      this.logger.error(`Failed to create SFTP session ${sessionId}:`, error);
-
-      // Cleanup on failure
-      this.cleanupSFTPSession(sessionId);
-
-      throw error;
-    }
+    return this.sftpSessionManager.createSession(sessionId, session, options);
   }
 
   /**
@@ -4342,74 +4312,13 @@ export class ConsoleManager
   }
 
   /**
-   * Send input to WinRM session
+   * Send input to WinRM session — delegates to WinRMSessionManager
    */
   private async sendInputToWinRM(
     sessionId: string,
     input: string
   ): Promise<void> {
-    const winrmProtocol = this.winrmProtocols.get(sessionId);
-    if (!winrmProtocol) {
-      throw new Error(`WinRM protocol not found for session ${sessionId}`);
-    }
-
-    const session = this.sessions.get(sessionId);
-    if (!session) {
-      throw new Error(`Session ${sessionId} not found`);
-    }
-
-    const winrmSession = this.winrmSessions.get(sessionId);
-    if (!winrmSession) {
-      throw new Error(`WinRM session state not found for session ${sessionId}`);
-    }
-
-    try {
-      // Determine if input is a PowerShell command or regular command
-      const isPowerShellCommand = input
-        .trim()
-        .match(
-          /^(Get-|Set-|New-|Remove-|Invoke-|Import-|Export-|Start-|Stop-|Restart-|Test-|\$)/i
-        );
-
-      if (isPowerShellCommand) {
-        // Execute as PowerShell command
-        await winrmProtocol.executeCommand(sessionId, input.trim());
-        // Output will be handled by the WinRM protocol event system
-      } else {
-        // Execute as regular command
-        await winrmProtocol.executeCommand(sessionId, input.trim());
-        // Output will be handled by the WinRM protocol event system
-      }
-
-      // Update session activity
-      winrmSession.lastActivity = new Date();
-      winrmSession.performanceCounters.commandsExecuted++;
-      this.winrmSessions.set(sessionId, winrmSession);
-
-      // Emit input event
-      this.emitEvent({
-        sessionId,
-        type: 'input',
-        timestamp: new Date(),
-        data: { input, isPowerShell: isPowerShellCommand },
-      });
-
-      this.logger.debug(
-        `Sent input to WinRM session ${sessionId}: ${input.substring(0, 100)}${input.length > 100 ? '...' : ''}`
-      );
-    } catch (error) {
-      // Update error count
-      if (winrmSession) {
-        winrmSession.performanceCounters.errorCount++;
-        this.winrmSessions.set(sessionId, winrmSession);
-      }
-
-      this.logger.error(
-        `Failed to send input to WinRM session ${sessionId}:`,
-        error
-      );
-      throw error;
-    }
+    return this.winrmSessionManager.sendInput(sessionId, input);
   }
 
   async stopSession(sessionId: string): Promise<void> {
@@ -4481,22 +4390,9 @@ export class ConsoleManager
       this.sshClients.delete(sessionId);
     }
 
-    // Handle WinRM sessions (legacy)
+    // Handle WinRM sessions — delegates to WinRMSessionManager
     if (session?.winrmOptions) {
-      try {
-        const winrmProtocol = this.winrmProtocols.get(sessionId);
-        if (winrmProtocol) {
-          await winrmProtocol.closeSession(sessionId);
-          this.winrmProtocols.delete(sessionId);
-        }
-
-        // Clean up WinRM session state
-        this.winrmSessions.delete(sessionId);
-
-        this.logger.info(`WinRM session ${sessionId} stopped and cleaned up`);
-      } catch (error) {
-        this.logger.error(`Error stopping WinRM session ${sessionId}:`, error);
-      }
+      await this.winrmSessionManager.cleanupSession(sessionId);
     }
 
     // Handle regular processes
@@ -5710,18 +5606,6 @@ export class ConsoleManager
     }
     this.sessionHealthCheckIntervals.clear();
 
-    // Clean up IPMI monitoring intervals
-    for (const [, timers] of this.ipmiMonitoringIntervals) {
-      if (Array.isArray(timers)) {
-        for (const timer of timers) {
-          clearInterval(timer);
-        }
-      } else {
-        clearInterval(timers);
-      }
-    }
-    this.ipmiMonitoringIntervals.clear();
-
     await this.stopAllSessions();
 
     // Close all SSH connections in the pool
@@ -5758,6 +5642,24 @@ export class ConsoleManager
     // Clean up RDP session manager
     await this.rdpSessionManager.destroy();
 
+    // Clean up IPC session manager
+    await this.ipcSessionManager.destroy();
+
+    // Clean up SFTP session manager
+    await this.sftpSessionManager.destroy();
+
+    // Clean up WinRM session manager
+    await this.winrmSessionManager.destroy();
+
+    // Clean up WSL session manager
+    await this.wslSessionManager.destroy();
+
+    // Clean up VNC session manager
+    await this.vncSessionManager.destroy();
+
+    // Clean up IPMI session manager
+    await this.ipmiSessionManager.destroy();
+
     // Clean up all cached protocols
     for (const [type, protocol] of this.protocolCache) {
       try {
@@ -5774,7 +5676,7 @@ export class ConsoleManager
       // aws-ssm — removed, now managed by AWSSSMSessionManager
       // azure — removed, now managed by AzureSessionManager
       // rdp — removed, now managed by RDPSessionManager
-      { name: 'wsl', instance: this.wslProtocol },
+      // wsl — removed, now managed by WSLSessionManager
       { name: 'ansible', instance: this.ansibleProtocol },
     ];
     for (const { name, instance } of legacyProtocols) {
@@ -5788,16 +5690,13 @@ export class ConsoleManager
     }
 
     // Clear session maps
-    this.sftpProtocols?.clear();
-    this.winrmProtocols?.clear();
-    this.vncProtocols?.clear();
-    this.ipcProtocols?.clear();
-    this.ipmiProtocols?.clear();
+    // sftpProtocols — removed, now managed by SFTPSessionManager
+    // winrmProtocols and winrmSessions — removed, now managed by WinRMSessionManager
+    // vncProtocols, vncSessions, vncFramebuffers — removed, now managed by VNCSessionManager
+    // ipcProtocols — removed, now managed by IPCSessionManager
+    // ipmiProtocols, ipmiSessions — removed, now managed by IPMISessionManager
     // rdpSessions — removed, now managed by RDPSessionManager
-    this.winrmSessions?.clear();
-    this.vncSessions?.clear();
-    this.ipcSessions?.clear();
-    this.ipmiSessions?.clear();
+    // ipcSessions — removed, now managed by IPCSessionManager
 
     // Shutdown self-healing components
     if (this.selfHealingEnabled) {
@@ -6588,9 +6487,7 @@ export class ConsoleManager
         // Fallback for specific protocols
         switch (session.type) {
           case 'wsl':
-            if (this.wslProtocol && 'resizeTerminal' in this.wslProtocol) {
-              await this.wslProtocol.resizeTerminal(sessionId, cols, rows);
-            }
+            await this.wslSessionManager.resizeTerminal(sessionId, cols, rows);
             break;
           default:
             this.logger.warn(
@@ -6635,41 +6532,7 @@ export class ConsoleManager
   // handleWebSocketTerminalOutput() — removed, now in WebSocketTerminalSessionManager.handleOutput()
   // attemptWebSocketTerminalRecovery() — removed, now in WebSocketTerminalSessionManager.attemptRecovery()
 
-  /**
-   * Handle WinRM output
-   */
-  private handleWinRMOutput(sessionId: string, output: ConsoleOutput): void {
-    // Store output in buffer
-    if (!this.outputBuffers.has(sessionId)) {
-      this.outputBuffers.set(sessionId, []);
-    }
-    const buffer = this.outputBuffers.get(sessionId)!;
-    buffer.push(output);
-
-    // Update output with sequence number
-    output.sequence = this.commandQueueManager.getNextSequenceNumber(sessionId);
-
-    // Emit output event
-    this.emit('output', output);
-
-    // Update session last activity
-    const winrmSession = this.winrmSessions.get(sessionId);
-    if (winrmSession) {
-      winrmSession.lastActivity = new Date();
-
-      // Update performance counters
-      if (output.data) {
-        winrmSession.performanceCounters.bytesTransferred += output.data.length;
-      }
-
-      this.winrmSessions.set(sessionId, winrmSession);
-    }
-
-    // Log debug information
-    this.logger.debug(
-      `WinRM output for session ${sessionId}: ${output.type} - ${output.data?.substring(0, 100)}${(output.data?.length || 0) > 100 ? '...' : ''}`
-    );
-  }
+  // handleWinRMOutput() — removed, now in WinRMSessionManager.handleOutput()
 
   /**
    * Create RDP session — delegates to RDPSessionManager
@@ -6682,344 +6545,24 @@ export class ConsoleManager
   }
 
   /**
-   * Create WinRM session
+   * Create WinRM session — delegates to WinRMSessionManager
    */
   private async createWinRMSession(
     sessionId: string,
     options: SessionOptions
   ): Promise<string> {
-    if (!options.winrmOptions) {
-      throw new Error('WinRM options are required for WinRM session');
-    }
-
-    try {
-      this.logger.info(`Creating WinRM session ${sessionId}`, {
-        host: options.winrmOptions.host,
-        port: options.winrmOptions.port,
-        username: options.winrmOptions.username,
-        authType: options.winrmOptions.authType,
-      });
-
-      // Create WinRM protocol instance
-      const winrmProtocol = await this.protocolFactory.createProtocol('winrm');
-      this.winrmProtocols.set(sessionId, winrmProtocol);
-
-      // Create WinRM session
-      const winrmSession = await winrmProtocol.createSession(options);
-
-      // Create WinRM session state
-      const winrmSessionState: WinRMSessionState = {
-        sessionId,
-        status: 'running',
-        host: options.winrmOptions.host,
-        port:
-          options.winrmOptions.port ||
-          (options.winrmOptions.protocol === 'https' ? 5986 : 5985),
-        protocol: options.winrmOptions.protocol || 'https',
-        authType: options.winrmOptions.authType || 'negotiate',
-        username: options.winrmOptions.username,
-        connectedAt: new Date(),
-        lastActivity: new Date(),
-        shells: new Map(),
-        activeCommands: new Map(),
-        transferredFiles: [],
-        performanceCounters: {
-          commandsExecuted: 0,
-          bytesTransferred: 0,
-          averageResponseTime: 0,
-          errorCount: 0,
-          reconnections: 0,
-        },
-        isConnected: true,
-      };
-
-      this.winrmSessions.set(sessionId, winrmSessionState);
-
-      // Update console session
-      const session = this.sessions.get(sessionId);
-      if (session) {
-        session.status = 'running';
-        session.pid = undefined; // WinRM sessions don't have PIDs
-        this.sessions.set(sessionId, session);
-      }
-
-      // Register with session manager
-      await this.sessionManager.updateSessionStatus(sessionId, 'running', {
-        winrmHost: options.winrmOptions.host,
-        winrmPort: options.winrmOptions.port,
-        protocol: options.winrmOptions.protocol,
-        authType: options.winrmOptions.authType,
-      });
-
-      this.logger.info(`WinRM session ${sessionId} created successfully`);
-      return sessionId;
-    } catch (error) {
-      this.logger.error(`Failed to create WinRM session ${sessionId}:`, error);
-
-      // Clean up failed session
-      this.winrmProtocols.delete(sessionId);
-      this.winrmSessions.delete(sessionId);
-
-      // Update session status to failed
-      const session = this.sessions.get(sessionId);
-      if (session) {
-        session.status = 'crashed';
-        this.sessions.set(sessionId, session);
-      }
-
-      throw error;
-    }
+    return this.winrmSessionManager.createSession(sessionId, options);
   }
 
   /**
-   * Create VNC session
+   * Create VNC session — delegates to VNCSessionManager
    */
   private async createVNCSession(
     sessionId: string,
     session: ConsoleSession,
     options: SessionOptions
   ): Promise<string> {
-    if (!options.vncOptions) {
-      throw new Error('VNC options are required for VNC session');
-    }
-
-    try {
-      this.logger.info(`Creating VNC session ${sessionId}`, {
-        host: options.vncOptions.host,
-        port: options.vncOptions.port,
-        rfbProtocolVersion: options.vncOptions.rfbProtocolVersion,
-        encoding: options.vncOptions.encoding,
-      });
-
-      // Create VNC protocol instance
-      const vncProtocol = await this.protocolFactory.createProtocol('vnc');
-      this.vncProtocols.set(sessionId, vncProtocol);
-
-      // Create VNC session via the protocol
-      const connectedSession = await vncProtocol.createSession(options);
-
-      // Create VNC session state
-      const vncSession: VNCSession = {
-        sessionId,
-        connectionId: (connectedSession as any).connectionId || sessionId,
-        status: 'connected',
-        host: options.vncOptions.host,
-        port: options.vncOptions.port || 5900,
-        protocolVersion: options.vncOptions.rfbProtocolVersion || 'auto',
-        serverName: (connectedSession as any).serverName || 'VNC Server',
-        securityType:
-          this.mapAuthMethodToVNCSecurityType(options.vncOptions.authMethod) ||
-          'vnc',
-        sharedConnection: options.vncOptions.sharedConnection || false,
-        viewOnlyMode: options.vncOptions.viewOnly || false,
-        supportedEncodings: (connectedSession as any).supportedEncodings || [
-          'raw',
-        ],
-        serverCapabilities: (connectedSession as any).serverCapabilities || {
-          cursorShapeUpdates: false,
-          richCursor: false,
-          desktopResize: false,
-          continuousUpdates: false,
-          fence: false,
-          fileTransfer: false,
-          clipboardTransfer: false,
-          audio: false,
-        },
-        connectionTime: new Date(),
-        lastActivity: new Date(),
-        framebufferInfo: {
-          width: 0,
-          height: 0,
-          pixelFormat: {
-            bitsPerPixel: 32,
-            depth: 24,
-            bigEndianFlag: false,
-            trueColorFlag: true,
-            redMax: 255,
-            greenMax: 255,
-            blueMax: 255,
-            redShift: 16,
-            greenShift: 8,
-            blueShift: 0,
-          },
-        },
-        statistics: {
-          bytesReceived: 0,
-          bytesSent: 0,
-          framebufferUpdates: 0,
-          keyboardEvents: 0,
-          mouseEvents: 0,
-          clipboardTransfers: 0,
-          fileTransfers: 0,
-          avgFrameRate: 0,
-          bandwidth: 0,
-          compression: 0,
-          latency: 0,
-        },
-        errorCount: 0,
-        warnings: [],
-        monitors: options.vncOptions.monitors || [
-          {
-            id: 0,
-            primary: true,
-            x: 0,
-            y: 0,
-            width: 1024,
-            height: 768,
-          },
-        ],
-      };
-
-      this.vncSessions.set(sessionId, vncSession);
-
-      // Initialize framebuffer
-      const framebuffer: VNCFramebuffer = {
-        width: vncSession.framebufferInfo.width,
-        height: vncSession.framebufferInfo.height,
-        pixelFormat: vncSession.framebufferInfo.pixelFormat,
-        data: Buffer.alloc(0),
-        lastUpdate: new Date(),
-        encoding: options.vncOptions.encoding || ['raw'],
-        compressionLevel: options.vncOptions.compressionLevel || 6,
-      };
-
-      this.vncFramebuffers.set(sessionId, framebuffer);
-
-      // Update console session
-      const updatedSession = { ...session };
-      updatedSession.status = 'running';
-      updatedSession.pid = undefined; // VNC sessions don't have PIDs
-      updatedSession.vncOptions = options.vncOptions;
-      this.sessions.set(sessionId, updatedSession);
-
-      // Initialize output buffer
-      this.outputBuffers.set(sessionId, []);
-
-      // Setup output streaming if requested
-      if (options.streaming) {
-        const streamManager = new StreamManager(sessionId);
-        this.streamManagers.set(sessionId, streamManager);
-      }
-
-      // Register with session manager
-      await this.sessionManager.updateSessionStatus(sessionId, 'running', {
-        vncHost: options.vncOptions.host,
-        vncPort: options.vncOptions.port,
-        rfbVersion: options.vncOptions.rfbProtocolVersion,
-        securityType: options.vncOptions.authMethod,
-        encoding: options.vncOptions.encoding,
-      });
-
-      // Setup VNC event handlers
-      this.setupVNCEventHandlers(sessionId, vncProtocol);
-
-      // Emit session started event
-      this.emitEvent({
-        sessionId,
-        type: 'started',
-        timestamp: new Date(),
-        data: {
-          host: options.vncOptions.host,
-          port: options.vncOptions.port,
-          encoding: options.vncOptions.encoding,
-          vnc: true,
-        },
-      });
-
-      this.logger.info(`VNC session ${sessionId} created successfully`);
-      return sessionId;
-    } catch (error) {
-      this.logger.error(`Failed to create VNC session ${sessionId}:`, error);
-
-      // Clean up failed session
-      this.vncProtocols.delete(sessionId);
-      this.vncSessions.delete(sessionId);
-      this.vncFramebuffers.delete(sessionId);
-
-      // Update session status to failed
-      const updatedSession = { ...session };
-      updatedSession.status = 'crashed';
-      this.sessions.set(sessionId, updatedSession);
-
-      throw error;
-    }
-  }
-
-  /**
-   * Setup VNC event handlers
-   */
-  private setupVNCEventHandlers(sessionId: string, vncProtocol: any): void {
-    // Handle framebuffer updates
-    vncProtocol.on('framebuffer-update', (update: { data: Buffer; width: number; height: number; encoding: string }) => {
-      const framebuffer = this.vncFramebuffers.get(sessionId);
-      if (framebuffer) {
-        framebuffer.data = update.data;
-        framebuffer.lastUpdate = new Date();
-        this.vncFramebuffers.set(sessionId, framebuffer);
-
-        // Emit framebuffer update event
-        this.emitEvent({
-          sessionId,
-          type: 'vnc-framebuffer-update',
-          timestamp: new Date(),
-          data: {
-            width: update.width,
-            height: update.height,
-            encoding: update.encoding,
-          },
-        });
-      }
-    });
-
-    // Handle VNC server messages
-    vncProtocol.on('server-message', (message: { text?: string }) => {
-      const output: ConsoleOutput = {
-        sessionId,
-        type: 'stdout',
-        data: message.text || JSON.stringify(message),
-        timestamp: new Date(),
-        raw: JSON.stringify(message),
-      };
-
-      const outputBuffer = this.outputBuffers.get(sessionId) || [];
-      outputBuffer.push(output);
-      this.outputBuffers.set(sessionId, outputBuffer);
-
-      this.emit('output', output);
-    });
-
-    // Handle clipboard updates
-    vncProtocol.on('clipboard-update', (clipboardData: string) => {
-      this.emitEvent({
-        sessionId,
-        type: 'vnc-clipboard-update',
-        timestamp: new Date(),
-        data: { content: clipboardData },
-      });
-    });
-
-    // Handle connection errors
-    vncProtocol.on('error', (error: Error) => {
-      this.logger.error(`VNC session ${sessionId} error:`, error);
-      this.handleSessionError(sessionId, error, 'vnc-connection');
-    });
-
-    // Handle disconnection
-    vncProtocol.on('disconnect', () => {
-      this.logger.info(`VNC session ${sessionId} disconnected`);
-      const session = this.sessions.get(sessionId);
-      if (session) {
-        session.status = 'terminated';
-        this.sessions.set(sessionId, session);
-      }
-
-      this.emitEvent({
-        sessionId,
-        type: 'terminated',
-        timestamp: new Date(),
-        data: { reason: 'vnc-disconnect' },
-      });
-    });
+    return this.vncSessionManager.createSession(sessionId, session, options);
   }
 
   /**
@@ -7078,69 +6621,20 @@ export class ConsoleManager
     return this.rdpSessionManager.disconnectSession(sessionId);
   }
 
-  // SFTP/SCP Protocol Methods
+  // SFTP/SCP Protocol Methods — delegated to SFTPSessionManager
+  // setupSFTPEventHandlers — removed, now internal to SFTPSessionManager
+  // updateTransferSessionStats — removed, now internal to SFTPSessionManager
+  // cleanupSFTPSession — removed, now internal to SFTPSessionManager
 
   /**
-   * Setup SFTP event handlers
-   */
-  private setupSFTPEventHandlers(sessionId: string, sftpProtocol: IProtocol): void {
-    sftpProtocol.on('connected', (connectionState: string) => {
-      this.logger.info(`SFTP session ${sessionId} connected`);
-      this.emit('sftp-connected', { sessionId, connectionState });
-    });
-
-    sftpProtocol.on('transfer-progress', (progress: { status: string; transferredBytes?: number }) => {
-      this.updateTransferSessionStats(sessionId, progress);
-      this.emit('sftp-transfer-progress', { sessionId, progress });
-    });
-
-    sftpProtocol.on('error', (error: Error) => {
-      this.logger.error(`SFTP session ${sessionId} error:`, error);
-      this.emit('sftp-error', { sessionId, error });
-    });
-  }
-
-  /**
-   * Update transfer session statistics
-   */
-  private updateTransferSessionStats(sessionId: string, progress: { status: string; transferredBytes?: number }): void {
-    const transferSession = this.fileTransferSessions.get(sessionId);
-    if (!transferSession) return;
-
-    if (progress.status === 'completed') {
-      transferSession.transferStats.successfulTransfers++;
-      transferSession.transferStats.totalBytesTransferred +=
-        progress.transferredBytes || 0;
-    } else if (progress.status === 'failed') {
-      transferSession.transferStats.failedTransfers++;
-    }
-  }
-
-  /**
-   * Cleanup SFTP session resources
-   */
-  private async cleanupSFTPSession(sessionId: string): Promise<void> {
-    try {
-      const sftpProtocol = this.sftpProtocols.get(sessionId);
-      if (sftpProtocol) {
-        await sftpProtocol.disconnect();
-        this.sftpProtocols.delete(sessionId);
-      }
-      this.fileTransferSessions.delete(sessionId);
-    } catch (error) {
-      this.logger.error(`Error cleaning up SFTP session ${sessionId}:`, error);
-    }
-  }
-
-  /**
-   * Get SFTP protocol for session
+   * Get SFTP protocol for session — delegates to SFTPSessionManager
    */
   getSFTPProtocol(sessionId: string): any | undefined {
-    return this.sftpProtocols.get(sessionId);
+    return this.sftpSessionManager.getSFTPProtocol(sessionId);
   }
 
   /**
-   * Upload file via SFTP
+   * Upload file via SFTP — delegates to SFTPSessionManager
    */
   async uploadFile(
     sessionId: string,
@@ -7148,15 +6642,11 @@ export class ConsoleManager
     remotePath: string,
     options?: SFTPTransferOptions
   ): Promise<unknown> {
-    const sftpProtocol = this.getSFTPProtocol(sessionId);
-    if (!sftpProtocol) {
-      throw new Error(`SFTP session not found: ${sessionId}`);
-    }
-    return await sftpProtocol.uploadFile(localPath, remotePath, options);
+    return this.sftpSessionManager.uploadFile(sessionId, localPath, remotePath, options);
   }
 
   /**
-   * Download file via SFTP
+   * Download file via SFTP — delegates to SFTPSessionManager
    */
   async downloadFile(
     sessionId: string,
@@ -7164,11 +6654,7 @@ export class ConsoleManager
     localPath: string,
     options?: SFTPTransferOptions
   ): Promise<unknown> {
-    const sftpProtocol = this.getSFTPProtocol(sessionId);
-    if (!sftpProtocol) {
-      throw new Error(`SFTP session not found: ${sessionId}`);
-    }
-    return await sftpProtocol.downloadFile(remotePath, localPath, options);
+    return this.sftpSessionManager.downloadFile(sessionId, remotePath, localPath, options);
   }
 
   // WSL Integration Methods
@@ -7177,15 +6663,7 @@ export class ConsoleManager
    * Setup WSL integration
    */
   private async setupWSLIntegration(): Promise<void> {
-    try {
-      // Initialize WSL protocol via factory
-      const protocol = await this.getOrCreateProtocol('wsl');
-      this.wslProtocol = protocol;
-      await this.wslProtocol.initialize();
-      this.logger.info('WSL integration setup completed');
-    } catch (error) {
-      this.logger.warn('WSL integration setup failed:', error);
-    }
+    return this.wslSessionManager.setupWSLIntegration();
   }
 
   /**
@@ -7211,46 +6689,7 @@ export class ConsoleManager
     session: ConsoleSession,
     options: SessionOptions
   ): Promise<string> {
-    try {
-      if (!options.wslOptions) {
-        throw new Error('WSL options are required for WSL session');
-      }
-
-      this.logger.info(
-        `Creating WSL session ${sessionId} with distribution: ${options.wslOptions.distribution || 'default'}`
-      );
-
-      // Create WSL session using the protocol
-      const wslSession = await this.wslProtocol.createSession(options);
-
-      // Update the session with WSL-specific properties
-      const updatedSession = { ...session, ...wslSession };
-      this.sessions.set(sessionId, updatedSession);
-      this.outputBuffers.set(sessionId, []);
-
-      // Setup output streaming if requested
-      if (options.streaming) {
-        const streamManager = new StreamManager(sessionId);
-        this.streamManagers.set(sessionId, streamManager);
-      }
-
-      // Emit session started event
-      this.emitEvent({
-        sessionId,
-        type: 'started',
-        timestamp: new Date(),
-        data: {
-          distribution: options.wslOptions.distribution,
-          wslVersion: options.wslOptions.wslVersion,
-          wsl: true,
-        },
-      });
-
-      return sessionId;
-    } catch (error) {
-      this.logger.error(`Failed to create WSL session ${sessionId}:`, error);
-      throw error;
-    }
+    return this.wslSessionManager.createSession(sessionId, session, options);
   }
 
   /**
@@ -7260,60 +6699,7 @@ export class ConsoleManager
     sessionId: string,
     input: string
   ): Promise<void> {
-    try {
-      const session = this.sessions.get(sessionId);
-      if (!session) {
-        throw new Error(`WSL session ${sessionId} not found`);
-      }
-
-      this.logger.debug(
-        `Sending input to WSL session ${sessionId}: ${input.substring(0, 50)}...`
-      );
-
-      // Send input through WSL protocol - for now we'll use executeCommand
-      // This is a simplified implementation - in production you'd want proper stdin handling
-      const result = await this.wslProtocol.executeCommand(sessionId, input);
-
-      // Create output events for stdout and stderr
-      if (result.stdout) {
-        const output: ConsoleOutput = {
-          sessionId,
-          type: 'stdout',
-          data: result.stdout,
-          timestamp: new Date(),
-          raw: result.stdout,
-        };
-
-        const outputBuffer = this.outputBuffers.get(sessionId) || [];
-        outputBuffer.push(output);
-        this.outputBuffers.set(sessionId, outputBuffer);
-
-        this.emit('output', output);
-      }
-
-      if (result.stderr) {
-        const output: ConsoleOutput = {
-          sessionId,
-          type: 'stderr',
-          data: result.stderr,
-          timestamp: new Date(),
-          raw: result.stderr,
-        };
-
-        const outputBuffer = this.outputBuffers.get(sessionId) || [];
-        outputBuffer.push(output);
-        this.outputBuffers.set(sessionId, outputBuffer);
-
-        this.emit('output', output);
-      }
-
-    } catch (error) {
-      this.logger.error(
-        `Failed to send input to WSL session ${sessionId}:`,
-        error
-      );
-      throw error;
-    }
+    return this.wslSessionManager.sendInput(sessionId, input);
   }
 
   /**
@@ -7322,56 +6708,28 @@ export class ConsoleManager
   async getWSLDistributions(): Promise<
     import('../types/index.js').WSLDistribution[]
   > {
-    try {
-      return await this.wslProtocol.getInstalledDistributions();
-    } catch (error) {
-      this.logger.error('Failed to get WSL distributions:', error);
-      throw error;
-    }
+    return this.wslSessionManager.getWSLDistributions();
   }
 
   /**
    * Get WSL system information
    */
   async getWSLSystemInfo(): Promise<import('../types/index.js').WSLSystemInfo> {
-    try {
-      return await this.wslProtocol.getSystemInfo();
-    } catch (error) {
-      this.logger.error('Failed to get WSL system info:', error);
-      throw error;
-    }
+    return this.wslSessionManager.getWSLSystemInfo();
   }
 
   /**
    * Start WSL distribution
    */
   async startWSLDistribution(distribution: string): Promise<void> {
-    try {
-      await this.wslProtocol.startDistribution(distribution);
-      this.logger.info(`Started WSL distribution: ${distribution}`);
-    } catch (error) {
-      this.logger.error(
-        `Failed to start WSL distribution ${distribution}:`,
-        error
-      );
-      throw error;
-    }
+    return this.wslSessionManager.startWSLDistribution(distribution);
   }
 
   /**
    * Stop WSL distribution
    */
   async stopWSLDistribution(distribution: string): Promise<void> {
-    try {
-      await this.wslProtocol.stopDistribution(distribution);
-      this.logger.info(`Stopped WSL distribution: ${distribution}`);
-    } catch (error) {
-      this.logger.error(
-        `Failed to stop WSL distribution ${distribution}:`,
-        error
-      );
-      throw error;
-    }
+    return this.wslSessionManager.stopWSLDistribution(distribution);
   }
 
   /**
@@ -7380,15 +6738,7 @@ export class ConsoleManager
   async getWSLHealthStatus(
     distribution: string
   ): Promise<import('../types/index.js').WSLHealthStatus> {
-    try {
-      return await this.wslProtocol.getHealthStatus(distribution);
-    } catch (error) {
-      this.logger.error(
-        `Failed to get WSL health status for ${distribution}:`,
-        error
-      );
-      throw error;
-    }
+    return this.wslSessionManager.getWSLHealthStatus(distribution);
   }
 
   /**
@@ -7398,685 +6748,131 @@ export class ConsoleManager
     path: string,
     direction: 'windows-to-linux' | 'linux-to-windows'
   ): Promise<string> {
-    try {
-      return await this.wslProtocol.translatePath(path, direction);
-    } catch (error) {
-      this.logger.error(`Failed to translate WSL path ${path}:`, error);
-      throw error;
-    }
+    return this.wslSessionManager.translateWSLPath(path, direction);
   }
 
   /**
    * Check if WSL is available
    */
   async isWSLAvailable(): Promise<boolean> {
-    try {
-      return await this.wslProtocol.checkWSLAvailability();
-    } catch (error) {
-      this.logger.error('Failed to check WSL availability:', error);
-      return false;
-    }
+    return this.wslSessionManager.isWSLAvailable();
   }
 
   /**
    * Get WSL configuration
    */
   async getWSLConfig(): Promise<import('../types/index.js').WSLConfig> {
-    try {
-      return await this.wslProtocol.getWSLConfig();
-    } catch (error) {
-      this.logger.error('Failed to get WSL configuration:', error);
-      throw error;
-    }
+    return this.wslSessionManager.getWSLConfig();
   }
 
   // sendInputToWebSocketTerminal() — removed, now in WebSocketTerminalSessionManager.sendInput()
   // createWebSocketTerminalSession() — removed, now in WebSocketTerminalSessionManager.createSession()
 
   /**
-   * Create IPMI session
+   * Create IPMI session — delegates to IPMISessionManager
    */
   private async createIPMISession(
     sessionId: string,
     session: ConsoleSession,
     options: SessionOptions
   ): Promise<string> {
-    if (!options.ipmiOptions) {
-      throw new Error('IPMI options are required for IPMI session');
-    }
-
-    try {
-      this.logger.info(`Creating IPMI session ${sessionId}`, {
-        host: options.ipmiOptions.host,
-        port: options.ipmiOptions.port,
-        username: options.ipmiOptions.username,
-        ipmiVersion: options.ipmiOptions.ipmiVersion,
-        privilegeLevel: options.ipmiOptions.privilegeLevel,
-      });
-
-      // Create IPMI protocol instance
-      const ipmiProtocol = await this.protocolFactory.createProtocol('ipmi');
-      this.ipmiProtocols.set(sessionId, ipmiProtocol);
-
-      const ipmiSession = await ipmiProtocol.createSession({
-        command: options.command,
-        args: options.args,
-        cwd: options.cwd,
-        env: options.env,
-        streaming: options.streaming || true,
-        timeout: options.timeout,
-        detectErrors: options.detectErrors,
-        ...options.ipmiOptions,
-      });
-
-      // Update console session
-      session.status = 'running';
-      session.pid = undefined; // IPMI sessions don't have PIDs
-      this.sessions.set(sessionId, session);
-
-      // Setup IPMI event handlers
-      this.setupIPMIEventHandlers(sessionId, ipmiSession);
-
-      // Register with session manager
-      await this.sessionManager.updateSessionStatus(sessionId, 'running', {
-        host: options.ipmiOptions.host,
-        port: options.ipmiOptions.port,
-        ipmiVersion: options.ipmiOptions.ipmiVersion,
-        privilegeLevel: options.ipmiOptions.privilegeLevel,
-        cipherSuite: options.ipmiOptions.cipherSuite,
-        interface: options.ipmiOptions.interface,
-      });
-
-      // Start IPMI monitoring if enabled
-      if (options.monitoring?.enableMetrics) {
-        await this.startIPMIMonitoring(sessionId, options.ipmiOptions);
-      }
-
-      this.logger.info(`IPMI session ${sessionId} created successfully`);
-      return sessionId;
-    } catch (error) {
-      this.logger.error(`Failed to create IPMI session ${sessionId}:`, error);
-
-      // Update session status to failed
-      session.status = 'crashed';
-      this.sessions.set(sessionId, session);
-
-      await this.sessionManager.updateSessionStatus(sessionId, 'failed', {
-        error: error instanceof Error ? error.message : String(error),
-      });
-
-      throw error;
-    }
+    return this.ipmiSessionManager.createSession(sessionId, session, options);
   }
 
-  /**
-   * Setup IPMI event handlers
-   */
-  private setupIPMIEventHandlers(sessionId: string, ipmiSession: any): void {
-    // Handle session output
-    ipmiSession.on(
-      'output',
-      (data: { type: 'stdout' | 'stderr'; data: string }) => {
-        this.emit('output', {
-          sessionId,
-          type: data.type,
-          data: data.data,
-          timestamp: new Date(),
-        });
-      }
-    );
-
-    // Handle SOL console data
-    ipmiSession.on('sol-data', (data: Buffer) => {
-      this.emit('output', {
-        sessionId,
-        type: 'stdout',
-        data: data.toString(),
-        timestamp: new Date(),
-      });
-    });
-
-    // Handle sensor data
-    ipmiSession.on('sensor-data', (sensorData: unknown) => {
-      this.emit('sensor-data', {
-        sessionId,
-        sensorData,
-        timestamp: new Date(),
-      });
-    });
-
-    // Handle power state changes
-    ipmiSession.on('power-state-change', (state: string) => {
-      this.emit('power-state-change', {
-        sessionId,
-        powerState: state,
-        timestamp: new Date(),
-      });
-    });
-
-    // Handle IPMI events
-    ipmiSession.on('ipmi-event', (event: unknown) => {
-      this.emit('ipmi-event', {
-        sessionId,
-        event,
-        timestamp: new Date(),
-      });
-    });
-
-    // Handle session errors
-    ipmiSession.on('error', (error: Error) => {
-      this.logger.error(`IPMI session ${sessionId} error:`, error);
-      this.emit('sessionError', {
-        sessionId,
-        error: error.message,
-        timestamp: new Date(),
-      });
-    });
-
-    // Handle session close
-    ipmiSession.on('close', () => {
-      this.handleIPMISessionClosed(sessionId);
-    });
-  }
+  // setupIPMIEventHandlers() — removed, now internal to IPMISessionManager
+  // startIPMIMonitoring() — removed, now internal to IPMISessionManager
+  // handleIPMISessionClosed() — removed, now internal to IPMISessionManager
 
   /**
-   * Start IPMI monitoring
-   */
-  private async startIPMIMonitoring(
-    sessionId: string,
-    options: import('../types/index.js').IPMIConnectionOptions
-  ): Promise<void> {
-    try {
-      // Start sensor monitoring
-      const sensorInterval = setInterval(async () => {
-        try {
-          const sensors = await this.readIPMISensors(sessionId);
-          if (sensors && sensors.length > 0) {
-            this.emit('sensor-readings', {
-              sessionId,
-              sensors,
-              timestamp: new Date(),
-            });
-          }
-        } catch (error) {
-          this.logger.warn(
-            `Failed to read sensors for session ${sessionId}:`,
-            error
-          );
-        }
-      }, 30000); // Default 30 second polling interval
-
-      // Start event log monitoring (always enabled for now)
-      const eventInterval = setInterval(async () => {
-        try {
-          const events = await this.getIPMIEventLog(sessionId);
-          if (events && events.length > 0) {
-            events.forEach((event) => {
-              this.emit('ipmi-event', {
-                sessionId,
-                event,
-                timestamp: new Date(),
-              });
-            });
-          }
-        } catch (error) {
-          this.logger.warn(
-            `Failed to read event log for session ${sessionId}:`,
-            error
-          );
-        }
-      }, 60000); // Default 60 second polling interval
-
-      // Store intervals for cleanup
-      this.ipmiMonitoringIntervals.set(sessionId, [
-        sensorInterval,
-        eventInterval,
-      ]);
-    } catch (error) {
-      this.logger.error(
-        `Failed to start IPMI monitoring for session ${sessionId}:`,
-        error
-      );
-    }
-  }
-
-  /**
-   * Handle IPMI session closed
-   */
-  private async handleIPMISessionClosed(sessionId: string): Promise<void> {
-    try {
-      this.logger.info(`IPMI session ${sessionId} closed`);
-
-      // Clean up monitoring intervals
-      const intervals = this.ipmiMonitoringIntervals.get(sessionId);
-      if (intervals) {
-        if (Array.isArray(intervals)) {
-          intervals.forEach((interval) => clearInterval(interval));
-        } else {
-          clearInterval(intervals);
-        }
-        this.ipmiMonitoringIntervals.delete(sessionId);
-      }
-
-      // Update session status
-      const session = this.sessions.get(sessionId);
-      if (session) {
-        session.status = 'closed';
-        this.sessions.set(sessionId, session);
-      }
-
-      // Clean up session data
-      this.ipmiSessions.delete(sessionId);
-
-      // Update session manager
-      await this.sessionManager.updateSessionStatus(sessionId, 'terminated');
-
-      // Emit session closed event
-      this.emit('sessionClosed', sessionId);
-    } catch (error) {
-      this.logger.error(
-        `Error handling IPMI session close for ${sessionId}:`,
-        error
-      );
-    }
-  }
-
-  /**
-   * Send input to IPMI session (SOL console)
+   * Send input to IPMI session (SOL console) — delegates to IPMISessionManager
    */
   async sendIPMIInput(sessionId: string, input: string): Promise<void> {
-    const ipmiState = this.ipmiSessions.get(sessionId);
-    if (!ipmiState) {
-      throw new Error(`IPMI session ${sessionId} not found or inactive`);
-    }
-
-    try {
-      const ipmiProtocol = this.ipmiProtocols.get(sessionId);
-      if (!ipmiProtocol) {
-        throw new Error(`IPMI protocol not found for session ${sessionId}`);
-      }
-      await ipmiProtocol.sendInput(sessionId, input);
-
-      this.logger.debug(
-        `Input sent to IPMI session ${sessionId}: ${input.substring(0, 50)}${input.length > 50 ? '...' : ''}`
-      );
-    } catch (error) {
-      this.logger.error(
-        `Failed to send input to IPMI session ${sessionId}:`,
-        error
-      );
-      throw error;
-    }
+    return this.ipmiSessionManager.sendIPMIInput(sessionId, input);
   }
 
   /**
-   * Execute IPMI power control operation
+   * Execute IPMI power control operation — delegates to IPMISessionManager
    */
   async executeIPMIPowerControl(
     sessionId: string,
     operation: 'on' | 'off' | 'reset' | 'cycle' | 'status'
   ): Promise<unknown> {
-    const ipmiState = this.ipmiSessions.get(sessionId);
-    if (!ipmiState) {
-      throw new Error(`IPMI session ${sessionId} not found or inactive`);
-    }
-
-    try {
-      const ipmiProtocol = this.ipmiProtocols.get(sessionId);
-      if (!ipmiProtocol) {
-        throw new Error(`IPMI protocol not found for session ${sessionId}`);
-      }
-      const result = await ipmiProtocol.executeCommand(sessionId, 'chassis', [
-        'power',
-        operation,
-      ]);
-
-      this.logger.info(
-        `Power control operation '${operation}' executed on IPMI session ${sessionId}`
-      );
-
-      // Emit power state change event
-      this.emit('power-state-change', {
-        sessionId,
-        operation,
-        result,
-        timestamp: new Date(),
-      });
-
-      return result;
-    } catch (error) {
-      this.logger.error(
-        `Failed to execute power control operation '${operation}' on IPMI session ${sessionId}:`,
-        error
-      );
-      throw error;
-    }
+    return this.ipmiSessionManager.executeIPMIPowerControl(sessionId, operation);
   }
 
   /**
-   * Read IPMI sensors
+   * Read IPMI sensors — delegates to IPMISessionManager
    */
   async readIPMISensors(sessionId: string): Promise<unknown[]> {
-    const ipmiState = this.ipmiSessions.get(sessionId);
-    if (!ipmiState) {
-      throw new Error(`IPMI session ${sessionId} not found or inactive`);
-    }
-
-    try {
-      const ipmiProtocol = this.ipmiProtocols.get(sessionId);
-      if (!ipmiProtocol) {
-        throw new Error(`IPMI protocol not found for session ${sessionId}`);
-      }
-      // Execute sensor reading command
-      await ipmiProtocol.executeCommand(sessionId, 'sensor', [
-        'reading',
-        'all',
-      ]);
-
-      // Since executeCommand returns void, return a placeholder array
-      // In a real implementation, this would be handled via events or callbacks
-      const sensors: unknown[] = [];
-      this.logger.debug(
-        `Executed sensor reading command for IPMI session ${sessionId}`
-      );
-
-      return sensors;
-    } catch (error) {
-      this.logger.error(
-        `Failed to read sensors from IPMI session ${sessionId}:`,
-        error
-      );
-      throw error;
-    }
+    return this.ipmiSessionManager.readIPMISensors(sessionId);
   }
 
   /**
-   * Get IPMI system event log
+   * Get IPMI system event log — delegates to IPMISessionManager
    */
   async getIPMIEventLog(sessionId: string): Promise<unknown[]> {
-    const ipmiState = this.ipmiSessions.get(sessionId);
-    if (!ipmiState) {
-      throw new Error(`IPMI session ${sessionId} not found or inactive`);
-    }
-
-    try {
-      const ipmiProtocol = this.ipmiProtocols.get(sessionId);
-      if (!ipmiProtocol) {
-        throw new Error(`IPMI protocol not found for session ${sessionId}`);
-      }
-      // Execute event log reading command
-      await ipmiProtocol.executeCommand(sessionId, 'sel', ['list']);
-
-      // Since executeCommand returns void, return a placeholder array
-      // In a real implementation, this would be handled via events or callbacks
-      const events: unknown[] = [];
-      this.logger.debug(
-        `Executed event log reading command for IPMI session ${sessionId}`
-      );
-
-      return events;
-    } catch (error) {
-      this.logger.error(
-        `Failed to read event log from IPMI session ${sessionId}:`,
-        error
-      );
-      throw error;
-    }
+    return this.ipmiSessionManager.getIPMIEventLog(sessionId);
   }
 
   /**
-   * Mount virtual media via IPMI
+   * Mount virtual media via IPMI — delegates to IPMISessionManager
    */
   async mountIPMIVirtualMedia(
     sessionId: string,
     mediaType: 'cd' | 'floppy' | 'usb',
     imageUrl: string
   ): Promise<void> {
-    const ipmiState = this.ipmiSessions.get(sessionId);
-    if (!ipmiState) {
-      throw new Error(`IPMI session ${sessionId} not found or inactive`);
-    }
-
-    try {
-      const ipmiProtocol = this.ipmiProtocols.get(sessionId);
-      if (!ipmiProtocol) {
-        throw new Error(`IPMI protocol not found for session ${sessionId}`);
-      }
-      await ipmiProtocol.executeCommand(sessionId, 'sol', [
-        'mount',
-        mediaType,
-        imageUrl,
-      ]);
-
-      this.logger.info(
-        `Virtual media '${mediaType}' mounted from '${imageUrl}' on IPMI session ${sessionId}`
-      );
-
-      // Emit virtual media event
-      this.emit('virtual-media-mounted', {
-        sessionId,
-        mediaType,
-        imageUrl,
-        timestamp: new Date(),
-      });
-    } catch (error) {
-      this.logger.error(
-        `Failed to mount virtual media on IPMI session ${sessionId}:`,
-        error
-      );
-      throw error;
-    }
+    return this.ipmiSessionManager.mountIPMIVirtualMedia(sessionId, mediaType, imageUrl);
   }
 
   /**
-   * Unmount virtual media via IPMI
+   * Unmount virtual media via IPMI — delegates to IPMISessionManager
    */
   async unmountIPMIVirtualMedia(
     sessionId: string,
     mediaType: 'cd' | 'floppy' | 'usb'
   ): Promise<void> {
-    const ipmiState = this.ipmiSessions.get(sessionId);
-    if (!ipmiState) {
-      throw new Error(`IPMI session ${sessionId} not found or inactive`);
-    }
-
-    try {
-      const ipmiProtocol = this.ipmiProtocols.get(sessionId);
-      if (!ipmiProtocol) {
-        throw new Error(`IPMI protocol not found for session ${sessionId}`);
-      }
-      await ipmiProtocol.executeCommand(sessionId, 'sol', [
-        'unmount',
-        mediaType,
-      ]);
-
-      this.logger.info(
-        `Virtual media '${mediaType}' unmounted from IPMI session ${sessionId}`
-      );
-
-      // Emit virtual media event
-      this.emit('virtual-media-unmounted', {
-        sessionId,
-        mediaType,
-        timestamp: new Date(),
-      });
-    } catch (error) {
-      this.logger.error(
-        `Failed to unmount virtual media on IPMI session ${sessionId}:`,
-        error
-      );
-      throw error;
-    }
+    return this.ipmiSessionManager.unmountIPMIVirtualMedia(sessionId, mediaType);
   }
 
   /**
-   * Update firmware via IPMI
+   * Update firmware via IPMI — delegates to IPMISessionManager
    */
   async updateIPMIFirmware(
     sessionId: string,
     firmwareType: 'bios' | 'bmc' | 'fpga',
     firmwarePath: string
   ): Promise<void> {
-    const ipmiState = this.ipmiSessions.get(sessionId);
-    if (!ipmiState) {
-      throw new Error(`IPMI session ${sessionId} not found or inactive`);
-    }
-
-    try {
-      this.logger.info(
-        `Starting firmware update for '${firmwareType}' on IPMI session ${sessionId}`
-      );
-
-      const ipmiProtocol = this.ipmiProtocols.get(sessionId);
-      if (!ipmiProtocol) {
-        throw new Error(`IPMI protocol not found for session ${sessionId}`);
-      }
-      await ipmiProtocol.executeCommand(sessionId, 'hpm', [
-        'upgrade',
-        firmwarePath,
-        'component',
-        firmwareType,
-      ]);
-
-      this.logger.info(
-        `Firmware update for '${firmwareType}' completed on IPMI session ${sessionId}`
-      );
-
-      // Emit firmware update event
-      this.emit('firmware-update-completed', {
-        sessionId,
-        firmwareType,
-        firmwarePath,
-        timestamp: new Date(),
-      });
-    } catch (error) {
-      this.logger.error(
-        `Failed to update firmware on IPMI session ${sessionId}:`,
-        error
-      );
-      throw error;
-    }
+    return this.ipmiSessionManager.updateIPMIFirmware(sessionId, firmwareType, firmwarePath);
   }
 
   /**
-   * Get IPMI system information
+   * Get IPMI system information — delegates to IPMISessionManager
    */
   async getIPMISystemInfo(sessionId: string): Promise<unknown> {
-    const ipmiState = this.ipmiSessions.get(sessionId);
-    if (!ipmiState) {
-      throw new Error(`IPMI session ${sessionId} not found or inactive`);
-    }
-
-    try {
-      const ipmiProtocol = this.ipmiProtocols.get(sessionId);
-      if (!ipmiProtocol) {
-        throw new Error(`IPMI protocol not found for session ${sessionId}`);
-      }
-      const systemInfo = await ipmiProtocol.executeCommand(sessionId, 'mc', [
-        'info',
-      ]);
-
-      this.logger.debug(`Retrieved system info from IPMI session ${sessionId}`);
-
-      return systemInfo;
-    } catch (error) {
-      this.logger.error(
-        `Failed to get system info from IPMI session ${sessionId}:`,
-        error
-      );
-      throw error;
-    }
+    return this.ipmiSessionManager.getIPMISystemInfo(sessionId);
   }
 
   /**
-   * Configure IPMI LAN settings
+   * Configure IPMI LAN settings — delegates to IPMISessionManager
    */
   async configureIPMILAN(
     sessionId: string,
     channel: number,
     settings: Record<string, unknown>
   ): Promise<void> {
-    const ipmiState = this.ipmiSessions.get(sessionId);
-    if (!ipmiState) {
-      throw new Error(`IPMI session ${sessionId} not found or inactive`);
-    }
-
-    try {
-      const ipmiProtocol = this.ipmiProtocols.get(sessionId);
-      if (!ipmiProtocol) {
-        throw new Error(`IPMI protocol not found for session ${sessionId}`);
-      }
-
-      // Configure LAN parameters
-      for (const [param, value] of Object.entries(settings)) {
-        await ipmiProtocol.executeCommand(sessionId, 'lan', [
-          'set',
-          channel.toString(),
-          param,
-          String(value),
-        ]);
-      }
-
-      this.logger.info(
-        `LAN configuration updated for channel ${channel} on IPMI session ${sessionId}`
-      );
-    } catch (error) {
-      this.logger.error(
-        `Failed to configure LAN settings on IPMI session ${sessionId}:`,
-        error
-      );
-      throw error;
-    }
+    return this.ipmiSessionManager.configureIPMILAN(sessionId, channel, settings);
   }
 
   /**
-   * Create IPC session
+   * Create IPC session — delegates to IPCSessionManager
    */
   private async createIPCSession(
     sessionId: string,
     session: ConsoleSession,
     options: SessionOptions
   ): Promise<string> {
-    if (!options.ipcOptions) {
-      throw new Error('IPC options are required for IPC session');
-    }
-
-    try {
-      // Implementation placeholder - IPC session creation
-      this.logger.info(`Creating IPC session ${sessionId}`);
-      return sessionId;
-    } catch (error) {
-      this.logger.error(`Failed to create IPC session ${sessionId}:`, error);
-      throw error;
-    }
-  }
-
-  /**
-   * Map auth method to VNC security type
-   */
-  private mapAuthMethodToVNCSecurityType(authMethod?: string): VNCSecurityType {
-    switch (authMethod) {
-      case 'none':
-        return 'none';
-      case 'vnc':
-        return 'vnc';
-      case 'tight':
-        return 'tight';
-      case 'ultra':
-        return 'ultra';
-      case 'tls':
-        return 'tls';
-      case 'vencrypt':
-        return 'vencrypt';
-      case 'ra2':
-        return 'ra2';
-      case 'ra2ne':
-        return 'ra2ne';
-      case 'sasl':
-        return 'sasl';
-      default:
-        return 'vnc';
-    }
+    return this.ipcSessionManager.createSession(sessionId, session, options);
   }
 
   // ========================================================================================
