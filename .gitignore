@@ -111,4 +111,4 @@ pagination-*.json
 final-*.json
 ultra-*.json
 sessions.json
-*.tgz
+*.tgz.harness-verified
